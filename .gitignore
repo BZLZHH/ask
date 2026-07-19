@@ -1,0 +1,13 @@
+/build/
+/build-*/
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/Makefile
+/refs/
+tests/.live-config/
+tests/.live-data/
+/.cache/
+*.swp
+__pycache__/
+*.py[cod]
