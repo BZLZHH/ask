@@ -96,11 +96,49 @@ class Provider(BaseHTTPRequestHandler):
             })
             return
         messages = request.get("messages", [])
+        pending_tools = set()
+        invalid_tools = False
+        for message in messages:
+            role = message.get("role")
+            if role == "assistant" and message.get("tool_calls"):
+                if pending_tools:
+                    invalid_tools = True
+                    break
+                pending_tools = {call.get("id") for call in message["tool_calls"]}
+            elif role == "tool":
+                call_id = message.get("tool_call_id")
+                if call_id not in pending_tools:
+                    invalid_tools = True
+                    break
+                pending_tools.remove(call_id)
+            elif pending_tools:
+                invalid_tools = True
+                break
+        if pending_tools:
+            invalid_tools = True
+        if invalid_tools:
+            self.send_json({"error": {"message": "orphaned tool result"}}, 400)
+            return
         system = next((m.get("content", "") for m in messages if m.get("role") == "system"), "")
         if request.get("stream"):
             last_role = messages[-1].get("role") if messages else ""
             user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
-            if request.get("tools") and last_role == "user":
+            if request.get("tools") and user == "exhaust tools":
+                call_number = sum(1 for message in messages if message.get("role") == "tool")
+                self.send_sse([
+                    {"choices": [{"delta": {"tool_calls": [{
+                        "index": 0, "id": f"call-exhaust-{call_number}", "type": "function",
+                        "function": {"name": "list_files", "arguments": "{}"},
+                    }]}, "finish_reason": "tool_calls"}]},
+                    "[DONE]",
+                ])
+            elif not request.get("tools") and user == "exhaust tools":
+                self.send_sse([
+                    {"choices": [{"delta": {"content": "budget "}, "finish_reason": None}]},
+                    {"choices": [{"delta": {"content": "final"}, "finish_reason": "stop"}]},
+                    "[DONE]",
+                ])
+            elif request.get("tools") and last_role == "user":
                 self.send_sse([
                     {"choices": [{"delta": {"tool_calls": [{
                         "index": 0, "id": "call-write", "type": "function",
@@ -258,6 +296,11 @@ def exercise_repl(binary, root, env):
         terminal.expect("Discard configuration changes?")
         terminal.send(b"y")
         terminal.expect("ask> ")
+
+        terminal.send(b"!do exhaust tools\n")
+        exhausted = terminal.expect("ask> ", timeout=8)
+        assert b"tool round limit reached" in exhausted, exhausted
+        assert b"budget final" in exhausted, exhausted
 
         terminal.send(b"!compact\n")
         compact = terminal.expect("ask> ")
