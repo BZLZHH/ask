@@ -2,6 +2,12 @@
 
 This file records user-visible changes to `ask`.
 
+## Unreleased
+
+### Added
+
+- Added a GitHub Actions Linux build matrix for Debug and Release, including tests and downloadable artifacts with SHA-256 checksums.
+
 ## 0.3.0 - 2026-07-25
 
 ### Added

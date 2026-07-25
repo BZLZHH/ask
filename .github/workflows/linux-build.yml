@@ -1,0 +1,73 @@
+name: Linux build
+
+'on':
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Linux ${{ matrix.build_type }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build_type: Debug
+            slug: debug
+          - build_type: Release
+            slug: release
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            bubblewrap \
+            cmake \
+            libcurl4-openssl-dev \
+            libedit-dev \
+            libjsoncpp-dev \
+            libncurses-dev \
+            libsqlite3-dev \
+            ninja-build \
+            pkg-config \
+            python3
+
+      - name: Configure ${{ matrix.build_type }}
+        run: >-
+          cmake -S . -B build/${{ matrix.slug }} -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBUILD_TESTING=ON
+
+      - name: Build ${{ matrix.build_type }}
+        run: cmake --build build/${{ matrix.slug }} --parallel 2
+
+      - name: Test ${{ matrix.build_type }}
+        run: ctest --test-dir build/${{ matrix.slug }} --output-on-failure
+
+      - name: Stage artifact
+        run: |
+          cmake --install build/${{ matrix.slug }} \
+            --prefix artifacts/ask-linux-x86_64-${{ matrix.slug }}
+          cd artifacts/ask-linux-x86_64-${{ matrix.slug }}
+          sha256sum bin/ask > ask.sha256
+
+      - name: Upload ${{ matrix.build_type }} artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ask-linux-x86_64-${{ matrix.slug }}
+          path: artifacts/ask-linux-x86_64-${{ matrix.slug }}
+          if-no-files-found: error
+          retention-days: 14
