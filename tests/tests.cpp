@@ -270,6 +270,48 @@ void test_tools(const std::filesystem::path& root) {
   auto symlink = tools.execute("read_file", R"({"path":"escape-link"})");
   expect(symlink.find("\"ok\":false") != std::string::npos, "external symlink is rejected");
 
+  auto git_workspace = root / "git-workspace";
+  std::filesystem::create_directories(git_workspace);
+  std::ofstream(git_workspace / "tracked.txt") << "before\n";
+  const auto git_path = git_workspace.string();
+  expect(std::system(("git -C '" + git_path + "' init -q").c_str()) == 0,
+         "test Git repository initializes");
+  expect(std::system(("git -C '" + git_path + "' config user.email test@example.com && "
+                      "git -C '" + git_path + "' config user.name test").c_str()) == 0,
+         "test Git identity configures");
+  expect(std::system(("git -C '" + git_path + "' add tracked.txt && git -C '" + git_path +
+                      "' commit -q -m initial").c_str()) == 0,
+         "test Git repository commits");
+  std::ofstream(git_workspace / "tracked.txt", std::ios::trunc) << "after\n";
+  std::ofstream(git_workspace / "untracked.txt") << "new\n";
+  ask::ToolExecutor git_tools(git_workspace);
+  auto git_schemas = git_tools.schemas(ask::ToolExecutor::Access::read_only);
+  std::string git_names;
+  for (const auto& schema : git_schemas) git_names += schema["function"].get("name", "").asString() + " ";
+  expect(git_names.find("git_status") != std::string::npos &&
+             git_names.find("git_diff") != std::string::npos &&
+             git_names.find("git_log") != std::string::npos &&
+             git_names.find("git_show") != std::string::npos,
+         "ask mode exposes native Git read-only tools");
+  auto status = git_tools.execute("git_status", R"({"include_untracked":true})",
+                                  ask::ToolExecutor::Access::read_only);
+  expect(status.find("\"conflicted\":false") != std::string::npos &&
+             status.find("tracked.txt") != std::string::npos &&
+             status.find("untracked.txt") != std::string::npos,
+         "git_status returns structured branch and file state");
+  auto diff = git_tools.execute("git_diff", R"({})", ask::ToolExecutor::Access::read_only);
+  expect(diff.find("after") != std::string::npos && diff.find("before") != std::string::npos,
+         "git_diff returns working tree changes");
+  auto log = git_tools.execute("git_log", R"({"limit":5})", ask::ToolExecutor::Access::read_only);
+  expect(log.find("initial") != std::string::npos, "git_log returns recent commits");
+  auto show = git_tools.execute("git_show", R"({"revision":"HEAD"})",
+                                ask::ToolExecutor::Access::read_only);
+  expect(show.find("initial") != std::string::npos, "git_show returns a selected revision");
+  auto invalid_revision = git_tools.execute("git_show", R"({"revision":"--exec=touch"})",
+                                            ask::ToolExecutor::Access::read_only);
+  expect(invalid_revision.find("invalid git revision") != std::string::npos,
+         "git_show rejects option injection");
+
   auto command = tools.execute("run_command", R"({"command":"printf sandbox-ok","timeout_seconds":5})");
   expect(command.find("sandbox-ok") != std::string::npos, "sandbox command runs");
   auto outside_path = external.string();

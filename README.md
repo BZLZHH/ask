@@ -15,6 +15,7 @@ Current version: `0.4.0`
 - Resume an automatically exited conversation by running bare `ask` within 10 seconds.
 - Search history, complete commands, enter multiline prompts, and cancel input or generation with Ctrl-C.
 - Let ordinary ask mode inspect workspace files and selected system status without write access.
+- Provide native read-only Git tools for status, diffs, history, revisions, branches, and conflicts.
 - Let the model request one-time or conversation-scoped do access through an explicit permission screen.
 - Enable local tools with `--do` for files, commands, HTTP requests, web pages, and web search.
 - Run multi-round `model -> tool -> model` agent loops.

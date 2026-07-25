@@ -85,6 +85,13 @@ Json::Value string_property(const std::string& description) {
   return value;
 }
 
+Json::Value boolean_property(const std::string& description) {
+  Json::Value value(Json::objectValue);
+  value["type"] = "boolean";
+  value["description"] = description;
+  return value;
+}
+
 bool path_is_within(const std::filesystem::path& root, const std::filesystem::path& candidate) {
   auto root_it = root.begin();
   auto candidate_it = candidate.begin();
@@ -291,6 +298,36 @@ Json::Value ToolExecutor::schemas(Access access, bool allow_escalation) const {
                              "Search regular workspace files for literal text without changing files.",
                              text_search, {"query"}));
 
+  Json::Value git_status_properties(Json::objectValue);
+  git_status_properties["include_untracked"] =
+      boolean_property("Include untracked files in the status result; defaults to true");
+  tools.append(function_tool(
+      "git_status",
+      "Inspect the current Git branch, ahead/behind state, changed files, and merge conflicts.",
+      git_status_properties));
+
+  Json::Value git_diff_properties(Json::objectValue);
+  git_diff_properties["staged"] = boolean_property("Compare the index with HEAD instead of the working tree");
+  git_diff_properties["stat"] = boolean_property("Return a compact diffstat instead of patch text");
+  git_diff_properties["path"] = string_property("Optional relative workspace path to limit the diff");
+  tools.append(function_tool("git_diff", "Show Git changes without modifying the repository.",
+                             git_diff_properties));
+
+  Json::Value git_log_properties(Json::objectValue);
+  git_log_properties["limit"]["type"] = "integer";
+  git_log_properties["limit"]["minimum"] = 1;
+  git_log_properties["limit"]["maximum"] = 100;
+  git_log_properties["path"] = string_property("Optional relative workspace path to limit history");
+  tools.append(function_tool("git_log", "Show recent Git commits in a compact, read-only form.",
+                             git_log_properties));
+
+  Json::Value git_show_properties(Json::objectValue);
+  git_show_properties["revision"] = string_property("A Git revision such as HEAD or HEAD~1");
+  git_show_properties["stat"] = boolean_property("Return a diffstat instead of the full patch");
+  git_show_properties["path"] = string_property("Optional relative workspace path to limit the revision");
+  tools.append(function_tool("git_show", "Inspect one Git revision without modifying the repository.",
+                             git_show_properties, {"revision"}));
+
   Json::Value readonly_command(Json::objectValue);
   readonly_command["command"]["type"] = "string";
   readonly_command["command"]["enum"] = Json::Value(Json::arrayValue);
@@ -381,6 +418,10 @@ std::string ToolExecutor::execute(const std::string& name, const std::string& ar
     if (name == "read_file") return read_file(args);
     if (name == "list_files") return list_files(args);
     if (name == "search_text") return search_text(args);
+    if (name == "git_status") return git_status(args);
+    if (name == "git_diff") return git_diff(args);
+    if (name == "git_log") return git_log(args);
+    if (name == "git_show") return git_show(args);
     if (name == "run_readonly_command") return run_readonly_command(args);
     if (access == Access::read_only) {
       return json_string(error_result("tool requires do mode: " + name));
@@ -833,6 +874,47 @@ CommandResult run_program(std::vector<std::string> program,
 
 }  // namespace
 
+namespace {
+
+bool valid_git_revision(const std::string& revision) {
+  return !revision.empty() && revision.front() != '-' &&
+         std::regex_match(revision, std::regex("[A-Za-z0-9_./~^{}:@+-]+"));
+}
+
+std::vector<std::string> optional_git_path(const std::filesystem::path& root,
+                                           const Json::Value& args) {
+  if (!args["path"].isString() || args["path"].asString().empty()) return {};
+  const auto path = args["path"].asString();
+  if (!readonly_workspace_path(root, path)) {
+    throw std::runtime_error("git path must be a relative workspace path");
+  }
+  return {path};
+}
+
+CommandResult run_git(const std::filesystem::path& root,
+                      const std::vector<std::string>& arguments) {
+  std::vector<std::string> command = {"/usr/bin/git", "-C", root.string(),
+                                      "-c", "core.fsmonitor=false", "-c", "core.pager=cat"};
+  command.insert(command.end(), arguments.begin(), arguments.end());
+  return run_program(command, root, 30, true, 1024ULL * 1024, false, true);
+}
+
+std::string git_output(const CommandResult& result, const std::string& operation) {
+  Json::Value data(Json::objectValue);
+  data["exit_code"] = result.exit_code;
+  data["output"] = result.output;
+  data["timed_out"] = result.timed_out;
+  data["read_only"] = true;
+  if (result.exit_code != 0) {
+    auto failure = error_result(operation + " failed");
+    failure["data"] = data;
+    return json_string(failure);
+  }
+  return json_string(ok_result(data));
+}
+
+}  // namespace
+
 std::string ToolExecutor::run_readonly_command(const Json::Value& args) {
   const auto command = readonly_command(root_, args);
   const int timeout = std::clamp(args.get("timeout_seconds", 30).asInt(), 1, 60);
@@ -848,6 +930,75 @@ std::string ToolExecutor::run_readonly_command(const Json::Value& args) {
   data["timed_out"] = result.timed_out;
   data["read_only"] = true;
   return json_string(ok_result(data));
+}
+
+std::string ToolExecutor::git_status(const Json::Value& args) {
+  std::vector<std::string> command = {"status", "--porcelain=v1", "--branch"};
+  if (args.isMember("include_untracked") && !args["include_untracked"].asBool()) {
+    command.push_back("--untracked-files=no");
+  }
+  const auto result = run_git(root_, command);
+  if (result.exit_code != 0) return git_output(result, "git status");
+
+  Json::Value data(Json::objectValue);
+  data["raw"] = result.output;
+  data["branch"] = "";
+  data["files"] = Json::Value(Json::arrayValue);
+  data["conflicts"] = Json::Value(Json::arrayValue);
+  std::istringstream lines(result.output);
+  std::string line;
+  while (std::getline(lines, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.rfind("## ", 0) == 0) {
+      data["branch"] = line.substr(3);
+      continue;
+    }
+    if (line.size() < 3) continue;
+    Json::Value file(Json::objectValue);
+    file["index_status"] = std::string(1, line[0]);
+    file["worktree_status"] = std::string(1, line[1]);
+    file["path"] = line.substr(3);
+    data["files"].append(file);
+    if (line[0] == 'U' || line[1] == 'U' || line.substr(0, 2) == "AA" ||
+        line.substr(0, 2) == "DD") {
+      data["conflicts"].append(file["path"]);
+    }
+  }
+  data["clean"] = data["files"].empty();
+  data["conflicted"] = !data["conflicts"].empty();
+  data["read_only"] = true;
+  return json_string(ok_result(data));
+}
+
+std::string ToolExecutor::git_diff(const Json::Value& args) {
+  std::vector<std::string> command = {"diff", "--no-ext-diff", "--no-textconv"};
+  if (args.get("staged", false).asBool()) command.push_back("--cached");
+  if (args.get("stat", false).asBool()) command.push_back("--stat");
+  command.push_back("--");
+  const auto path = optional_git_path(root_, args);
+  command.insert(command.end(), path.begin(), path.end());
+  return git_output(run_git(root_, command), "git diff");
+}
+
+std::string ToolExecutor::git_log(const Json::Value& args) {
+  const int limit = std::clamp(args.get("limit", 20).asInt(), 1, 100);
+  std::vector<std::string> command = {"log", "--oneline", "--decorate", "-n",
+                                      std::to_string(limit), "--"};
+  const auto path = optional_git_path(root_, args);
+  command.insert(command.end(), path.begin(), path.end());
+  return git_output(run_git(root_, command), "git log");
+}
+
+std::string ToolExecutor::git_show(const Json::Value& args) {
+  const auto revision = args.get("revision", "").asString();
+  if (!valid_git_revision(revision)) throw std::runtime_error("invalid git revision");
+  std::vector<std::string> command = {"show", "--no-ext-diff", "--no-textconv"};
+  if (args.get("stat", false).asBool()) command.push_back("--stat");
+  command.push_back(revision);
+  command.push_back("--");
+  const auto path = optional_git_path(root_, args);
+  command.insert(command.end(), path.begin(), path.end());
+  return git_output(run_git(root_, command), "git show");
 }
 
 CommandResult ToolExecutor::run_process(const std::string& command,

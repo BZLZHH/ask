@@ -2,6 +2,12 @@
 
 This file records user-visible changes to `ask`.
 
+## Unreleased
+
+### Added
+
+- Added native read-only `git_status`, `git_diff`, `git_log`, and `git_show` tools with structured branch, file, and conflict state.
+
 ## 0.4.0 - 2026-07-25
 
 ### Added

@@ -44,6 +44,10 @@ class ToolExecutor {
   std::string write_file(const Json::Value& args);
   std::string list_files(const Json::Value& args);
   std::string search_text(const Json::Value& args);
+  std::string git_status(const Json::Value& args);
+  std::string git_diff(const Json::Value& args);
+  std::string git_log(const Json::Value& args);
+  std::string git_show(const Json::Value& args);
   std::string run_readonly_command(const Json::Value& args);
   std::string run_command(const Json::Value& args);
   std::string fetch_http(const Json::Value& args);
