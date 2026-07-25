@@ -7,6 +7,11 @@ This file records user-visible changes to `ask`.
 ### Added
 
 - Added a GitHub Actions Linux build matrix for Debug and Release artifacts with SHA-256 checksums.
+- Added read-only tools to ordinary ask mode for workspace reads, directory listing, literal text search, and strictly allowlisted commands.
+- Added constrained system-status access for NVIDIA GPU, kernel, CPU, memory, disk, and uptime information.
+- Added a model-initiated do permission screen with Deny, Allow once, and Allow for conversation choices.
+- Added conversation-scoped do upgrades that persist through save, explicit resume, and quick resume without changing global defaults.
+- Added per-request model permission context that names the current access state, current tools, full do tools, approval choices, and authorization lifetime without polluting saved conversation history.
 - Added configurable first-response behavior: Automatic, Always continue, and Always exit.
 - Added an independent Judge provider/model that classifies whether an interactive conversation should continue, with safe fallback to the REPL on failure or invalid output.
 - Added one-time 10-second quick resume for automatically exited conversations, including restored provider, model, history, working directory, and do mode.
@@ -14,11 +19,16 @@ This file records user-visible changes to `ask`.
 
 ### Changed
 
+- Ordinary sessions now display `[ask/read-only]`; `!ask` forces a read-only turn and disables permission requests, while `!do` remains a full-tool one-turn override.
+- Read-only commands use fixed executable paths, direct argument vectors, per-command option validation, and a read-only workspace mount instead of model-controlled shell syntax.
 - `--json` now remains one-shot even when run directly from a terminal.
 - `--no-repl`, `--json`, piped/non-TTY calls, and explicit `-i` bypass automatic Judge evaluation.
 
 ### Fixed
 
+- Permission requests now default to Deny and are rejected automatically when no interactive terminal is available.
+- One-time do access is consumed after exactly the next model response/tool batch and is never saved.
+- Models now receive explicit `DO_ONCE_THIS_RESPONSE` and post-consumption `ASK_READ_ONLY` states instead of having to infer authorization lifetime from changing tool schemas.
 - Judge calls now use provider-compatible minimal Thinking controls, reserve enough output tokens for a final decision, and accept unambiguous quoted or Markdown-wrapped `CONTINUE`/`EXIT` responses.
 
 ## 0.3.0 - 2026-07-25

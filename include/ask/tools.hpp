@@ -16,13 +16,15 @@ struct CommandResult {
 
 class ToolExecutor {
  public:
+  enum class Access { read_only, full };
   using Approval =
       std::function<bool(const std::string&, const std::filesystem::path&, const std::string&)>;
 
   explicit ToolExecutor(std::filesystem::path root, Approval approval = {});
 
-  Json::Value schemas() const;
-  std::string execute(const std::string& name, const std::string& arguments);
+  Json::Value schemas(Access access = Access::full, bool allow_escalation = true) const;
+  std::string execute(const std::string& name, const std::string& arguments,
+                      Access access = Access::full);
   const std::filesystem::path& root() const { return root_; }
 
   static CommandResult run_process(const std::string& command,
@@ -30,7 +32,8 @@ class ToolExecutor {
                                    int timeout_seconds,
                                    bool sandboxed,
                                    std::size_t max_output = 1024ULL * 1024,
-                                   bool clean_environment = false);
+                                   bool clean_environment = false,
+                                   bool readonly_workspace = false);
   static bool terminal_approval(const std::string& command,
                                 const std::filesystem::path& cwd,
                                 const std::string& reason);
@@ -40,6 +43,8 @@ class ToolExecutor {
   std::string read_file(const Json::Value& args);
   std::string write_file(const Json::Value& args);
   std::string list_files(const Json::Value& args);
+  std::string search_text(const Json::Value& args);
+  std::string run_readonly_command(const Json::Value& args);
   std::string run_command(const Json::Value& args);
   std::string fetch_http(const Json::Value& args);
   std::string browse_page(const Json::Value& args);

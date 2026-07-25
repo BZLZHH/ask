@@ -35,7 +35,10 @@ class Conversation {
   const Session& session() const { return session_; }
 
  private:
-  bool maybe_compact(const std::string& pending, bool do_mode);
+  bool maybe_compact(const std::string& pending, bool do_mode,
+                     const std::string& system_prompt);
+  std::string handle_do_mode_request(const std::string& arguments,
+                                     bool& allow_once_for_next_batch);
   bool execute_shell(const std::string& command);
   void persist();
   const Provider& provider() const;

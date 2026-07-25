@@ -14,6 +14,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <unordered_set>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -261,7 +262,7 @@ ToolExecutor::ToolExecutor(std::filesystem::path root, Approval approval)
   if (!std::filesystem::is_directory(root_)) throw std::runtime_error("tool root is not a directory");
 }
 
-Json::Value ToolExecutor::schemas() const {
+Json::Value ToolExecutor::schemas(Access access, bool allow_escalation) const {
   Json::Value tools(Json::arrayValue);
   Json::Value read(Json::objectValue);
   read["path"] = string_property("UTF-8 file path relative to the workspace");
@@ -272,13 +273,6 @@ Json::Value ToolExecutor::schemas() const {
   read["limit"]["maximum"] = 1048576;
   tools.append(function_tool("read_file", "Read part of a file inside the workspace.", read, {"path"}));
 
-  Json::Value write(Json::objectValue);
-  write["path"] = string_property("File path relative to the workspace");
-  write["content"] = string_property("Exact content to write");
-  write["append"]["type"] = "boolean";
-  tools.append(function_tool("write_file", "Write or append a file inside the workspace.", write,
-                             {"path", "content"}));
-
   Json::Value list(Json::objectValue);
   list["path"] = string_property("Directory relative to the workspace; defaults to .");
   list["recursive"]["type"] = "boolean";
@@ -286,6 +280,55 @@ Json::Value ToolExecutor::schemas() const {
   list["max_entries"]["minimum"] = 1;
   list["max_entries"]["maximum"] = 2000;
   tools.append(function_tool("list_files", "List files and directories inside the workspace.", list));
+
+  Json::Value text_search(Json::objectValue);
+  text_search["query"] = string_property("Literal text to find");
+  text_search["path"] = string_property("Directory relative to the workspace; defaults to .");
+  text_search["max_results"]["type"] = "integer";
+  text_search["max_results"]["minimum"] = 1;
+  text_search["max_results"]["maximum"] = 500;
+  tools.append(function_tool("search_text",
+                             "Search regular workspace files for literal text without changing files.",
+                             text_search, {"query"}));
+
+  Json::Value readonly_command(Json::objectValue);
+  readonly_command["command"]["type"] = "string";
+  readonly_command["command"]["enum"] = Json::Value(Json::arrayValue);
+  for (const auto* name : {"pwd", "ls", "rg", "stat", "file", "wc",
+                           "head", "tail", "git", "nvidia-smi", "uname",
+                           "lscpu", "free", "df", "uptime"}) {
+    readonly_command["command"]["enum"].append(name);
+  }
+  readonly_command["arguments"]["type"] = "array";
+  readonly_command["arguments"]["items"]["type"] = "string";
+  readonly_command["timeout_seconds"]["type"] = "integer";
+  readonly_command["timeout_seconds"]["minimum"] = 1;
+  readonly_command["timeout_seconds"]["maximum"] = 60;
+  tools.append(function_tool("run_readonly_command",
+                             "Run one allowlisted read-only command in a read-only workspace sandbox.",
+                             readonly_command, {"command"}));
+
+  if (access == Access::read_only) {
+    if (!allow_escalation) return tools;
+    Json::Value request(Json::objectValue);
+    request["reason"] = string_property("Why write or unrestricted command access is necessary");
+    request["operation"] = string_property("Concrete operation that will be performed after approval");
+    request["suggested_scope"]["type"] = "string";
+    request["suggested_scope"]["enum"].append("once");
+    request["suggested_scope"]["enum"].append("conversation");
+    tools.append(function_tool(
+        "request_do_mode",
+        "Ask the user to grant do access. This request never grants access by itself.",
+        request, {"reason", "operation", "suggested_scope"}));
+    return tools;
+  }
+
+  Json::Value write(Json::objectValue);
+  write["path"] = string_property("File path relative to the workspace");
+  write["content"] = string_property("Exact content to write");
+  write["append"]["type"] = "boolean";
+  tools.append(function_tool("write_file", "Write or append a file inside the workspace.", write,
+                             {"path", "content"}));
 
   Json::Value command(Json::objectValue);
   command["command"] = string_property("Shell command to execute");
@@ -331,12 +374,18 @@ std::filesystem::path ToolExecutor::checked_path(const std::string& input, bool 
   return candidate;
 }
 
-std::string ToolExecutor::execute(const std::string& name, const std::string& arguments) {
+std::string ToolExecutor::execute(const std::string& name, const std::string& arguments,
+                                  Access access) {
   try {
     const auto args = parse_arguments(arguments);
     if (name == "read_file") return read_file(args);
-    if (name == "write_file") return write_file(args);
     if (name == "list_files") return list_files(args);
+    if (name == "search_text") return search_text(args);
+    if (name == "run_readonly_command") return run_readonly_command(args);
+    if (access == Access::read_only) {
+      return json_string(error_result("tool requires do mode: " + name));
+    }
+    if (name == "write_file") return write_file(args);
     if (name == "run_command") return run_command(args);
     if (name == "fetch_http") return fetch_http(args);
     if (name == "browse_page") return browse_page(args);
@@ -443,12 +492,258 @@ std::string ToolExecutor::list_files(const Json::Value& args) {
   return json_string(ok_result(data));
 }
 
-CommandResult ToolExecutor::run_process(const std::string& command,
-                                        const std::filesystem::path& cwd,
-                                        int timeout_seconds,
-                                        bool sandboxed,
-                                        std::size_t max_output,
-                                        bool clean_environment) {
+std::string ToolExecutor::search_text(const Json::Value& args) {
+  const auto query = args.get("query", "").asString();
+  if (query.empty()) throw std::runtime_error("query cannot be empty");
+  const auto base = checked_path(args.get("path", ".").asString(), false);
+  if (!std::filesystem::is_directory(base)) throw std::runtime_error("path is not a directory");
+  const int maximum = std::clamp(args.get("max_results", 100).asInt(), 1, 500);
+  Json::Value matches(Json::arrayValue);
+  std::error_code error;
+  std::filesystem::recursive_directory_iterator iterator(
+      base, std::filesystem::directory_options::skip_permission_denied, error);
+  for (const auto& entry : iterator) {
+    if (matches.size() >= static_cast<Json::ArrayIndex>(maximum)) break;
+    const auto status = entry.symlink_status(error);
+    if (std::filesystem::is_symlink(status)) {
+      if (entry.is_directory(error)) iterator.disable_recursion_pending();
+      continue;
+    }
+    if (!std::filesystem::is_regular_file(status) ||
+        entry.file_size(error) > 4ULL * 1024 * 1024) {
+      continue;
+    }
+    std::ifstream input(entry.path());
+    if (!input) continue;
+    std::string line;
+    int line_number = 0;
+    while (std::getline(input, line)) {
+      ++line_number;
+      if (line.find('\0') != std::string::npos) break;
+      if (line.find(query) == std::string::npos) continue;
+      Json::Value match(Json::objectValue);
+      match["path"] = std::filesystem::relative(entry.path(), root_).string();
+      match["line"] = line_number;
+      match["text"] = line.substr(0, 2000);
+      matches.append(match);
+      if (matches.size() >= static_cast<Json::ArrayIndex>(maximum)) break;
+    }
+  }
+  Json::Value data(Json::objectValue);
+  data["matches"] = matches;
+  data["truncated"] = matches.size() >= static_cast<Json::ArrayIndex>(maximum);
+  return json_string(ok_result(data));
+}
+
+namespace {
+
+bool readonly_workspace_path(const std::filesystem::path& root, const std::string& value) {
+  if (value.empty() || value.front() == '-') return false;
+  const std::filesystem::path path(value);
+  if (path.is_absolute()) return false;
+  return path_is_within(root, std::filesystem::weakly_canonical(root / path));
+}
+
+bool unsigned_number(const std::string& value) {
+  return !value.empty() && std::all_of(value.begin(), value.end(), [](unsigned char character) {
+           return std::isdigit(character);
+         });
+}
+
+std::vector<std::string> readonly_command(const std::filesystem::path& root,
+                                          const Json::Value& args) {
+  const auto name = args.get("command", "").asString();
+  if (!args["arguments"].isNull() && !args["arguments"].isArray()) {
+    throw std::runtime_error("arguments must be an array");
+  }
+  std::vector<std::string> input;
+  for (const auto& item : args["arguments"]) {
+    if (!item.isString() || item.asString().find('\0') != std::string::npos) {
+      throw std::runtime_error("command arguments must be strings without NUL bytes");
+    }
+    input.push_back(item.asString());
+  }
+  std::vector<std::string> command;
+  auto require_paths = [&](std::size_t begin) {
+    for (std::size_t index = begin; index < input.size(); ++index) {
+      if (!readonly_workspace_path(root, input[index])) {
+        throw std::runtime_error("only relative workspace paths are allowed");
+      }
+    }
+  };
+  if (name == "pwd") {
+    if (!input.empty()) throw std::runtime_error("pwd accepts no arguments");
+    command = {"/usr/bin/pwd"};
+  } else if (name == "ls") {
+    static const std::unordered_set<std::string> allowed = {
+        "-a", "-A", "-l", "-h", "-la", "-al", "-lh", "-hl",
+        "-lah", "-lha", "-alh", "-ahl", "-hal", "-hla"};
+    std::size_t first_path = 0;
+    while (first_path < input.size() && input[first_path].starts_with('-')) {
+      if (!allowed.contains(input[first_path])) throw std::runtime_error("unsupported ls option");
+      ++first_path;
+    }
+    require_paths(first_path);
+    command = {"/usr/bin/ls"};
+    command.insert(command.end(), input.begin(), input.end());
+  } else if (name == "stat" || name == "file" || name == "wc" ||
+             name == "head" || name == "tail") {
+    std::size_t first_path = 0;
+    if (name == "file" && first_path < input.size() && input[first_path] == "-b") {
+      ++first_path;
+    } else if (name == "wc") {
+      static const std::unordered_set<std::string> allowed = {"-c", "-l", "-w", "-m"};
+      while (first_path < input.size() && input[first_path].starts_with('-')) {
+        if (!allowed.contains(input[first_path])) throw std::runtime_error("unsupported wc option");
+        ++first_path;
+      }
+    } else if (name == "head" || name == "tail") {
+      if (first_path < input.size() &&
+          (input[first_path] == "-n" || input[first_path] == "-c")) {
+        ++first_path;
+        if (first_path >= input.size() || !unsigned_number(input[first_path])) {
+          throw std::runtime_error("numeric option requires a non-negative integer");
+        }
+        ++first_path;
+      }
+    }
+    require_paths(first_path);
+    command = {"/usr/bin/" + name};
+    command.insert(command.end(), input.begin(), input.end());
+  } else if (name == "rg") {
+    static const std::unordered_set<std::string> allowed = {
+        "-n", "-i", "-F", "--hidden", "--no-heading"};
+    std::size_t pattern = 0;
+    while (pattern < input.size() && input[pattern].starts_with('-')) {
+      if (!allowed.contains(input[pattern])) throw std::runtime_error("unsupported rg option");
+      ++pattern;
+    }
+    if (pattern >= input.size()) throw std::runtime_error("rg requires a pattern");
+    require_paths(pattern + 1);
+    command = {"/usr/bin/rg"};
+    command.insert(command.end(), input.begin(), input.end());
+  } else if (name == "git") {
+    if (input.empty()) throw std::runtime_error("git requires a read-only subcommand");
+    static const std::unordered_set<std::string> subcommands = {
+        "status", "diff", "log", "show"};
+    static const std::unordered_set<std::string> options = {
+        "--short", "--branch", "--porcelain", "--cached", "--stat", "--name-only",
+        "--name-status", "--oneline", "--decorate", "--no-patch"};
+    if (!subcommands.contains(input.front())) throw std::runtime_error("unsupported git subcommand");
+    bool paths = false;
+    for (std::size_t index = 1; index < input.size(); ++index) {
+      if (input[index] == "--") { paths = true; continue; }
+      if (paths) {
+        if (!readonly_workspace_path(root, input[index])) throw std::runtime_error("invalid git path");
+      } else if (input[index].starts_with('-')) {
+        if (!options.contains(input[index]) &&
+            !std::regex_match(input[index], std::regex("-n[0-9]+"))) {
+          throw std::runtime_error("unsupported git option");
+        }
+      } else if (!std::regex_match(input[index], std::regex("[A-Za-z0-9_./~^{}:-]+"))) {
+        throw std::runtime_error("invalid git revision");
+      }
+    }
+    command = {"/usr/bin/git", "-c", "core.fsmonitor=false", "-c", "core.pager=cat",
+               "-c", "diff.external=", input.front()};
+    if (input.front() == "diff" || input.front() == "show" || input.front() == "log") {
+      command.push_back("--no-ext-diff");
+      command.push_back("--no-textconv");
+    }
+    command.insert(command.end(), input.begin() + 1, input.end());
+  } else if (name == "nvidia-smi") {
+    static const std::unordered_set<std::string> simple = {
+        "-L", "--list-gpus", "--help-query-gpu"};
+    static const std::unordered_set<std::string> fields = {
+        "name", "uuid", "driver_version", "compute_cap", "memory.total",
+        "memory.used", "memory.free", "utilization.gpu", "utilization.memory",
+        "temperature.gpu", "power.draw", "power.limit"};
+    if (input.size() == 1 && simple.contains(input.front())) {
+      command = {"/usr/bin/nvidia-smi", input.front()};
+    } else if (input.empty()) {
+      command = {"/usr/bin/nvidia-smi"};
+    } else {
+      std::string query;
+      std::string format;
+      for (const auto& argument : input) {
+        if (argument.starts_with("--query-gpu=") && query.empty()) {
+          query = argument.substr(12);
+          std::istringstream names(query);
+          std::string field;
+          while (std::getline(names, field, ',')) {
+            if (!fields.contains(field)) throw std::runtime_error("unsupported nvidia-smi field");
+          }
+        } else if (argument.starts_with("--format=") && format.empty()) {
+          format = argument.substr(9);
+          if (format != "csv" && format != "csv,noheader" &&
+              format != "csv,nounits" && format != "csv,noheader,nounits") {
+            throw std::runtime_error("unsupported nvidia-smi format");
+          }
+        } else {
+          throw std::runtime_error("unsupported nvidia-smi option");
+        }
+      }
+      if (query.empty()) throw std::runtime_error("nvidia-smi query requires --query-gpu");
+      command = {"/usr/bin/nvidia-smi", "--query-gpu=" + query,
+                 "--format=" + (format.empty() ? "csv" : format)};
+    }
+  } else if (name == "uname") {
+    static const std::unordered_set<std::string> allowed = {
+        "-a", "--all", "-s", "--kernel-name", "-r", "--kernel-release",
+        "-v", "--kernel-version", "-m", "--machine", "-p", "--processor",
+        "-i", "--hardware-platform", "-o", "--operating-system"};
+    for (const auto& argument : input) {
+      if (!allowed.contains(argument)) throw std::runtime_error("unsupported uname option");
+    }
+    command = {"/usr/bin/uname"};
+    command.insert(command.end(), input.begin(), input.end());
+  } else if (name == "lscpu") {
+    static const std::unordered_set<std::string> allowed = {"-J", "--json"};
+    for (const auto& argument : input) {
+      if (!allowed.contains(argument)) throw std::runtime_error("unsupported lscpu option");
+    }
+    command = {"/usr/bin/lscpu"};
+    command.insert(command.end(), input.begin(), input.end());
+  } else if (name == "free") {
+    static const std::unordered_set<std::string> allowed = {
+        "-b", "--bytes", "-k", "--kibi", "-m", "--mebi", "-g",
+        "--gibi", "-h", "--human", "--si", "-w", "--wide"};
+    for (const auto& argument : input) {
+      if (!allowed.contains(argument)) throw std::runtime_error("unsupported free option");
+    }
+    command = {"/usr/bin/free"};
+    command.insert(command.end(), input.begin(), input.end());
+  } else if (name == "df") {
+    static const std::unordered_set<std::string> allowed = {
+        "-h", "--human-readable", "-H", "--si", "-i", "--inodes",
+        "-T", "--print-type", "-P", "--portability"};
+    for (const auto& argument : input) {
+      if (!allowed.contains(argument)) throw std::runtime_error("unsupported df option");
+    }
+    command = {"/usr/bin/df"};
+    command.insert(command.end(), input.begin(), input.end());
+  } else if (name == "uptime") {
+    static const std::unordered_set<std::string> allowed = {
+        "-p", "--pretty", "-s", "--since"};
+    if (input.size() > 1 || (!input.empty() && !allowed.contains(input.front()))) {
+      throw std::runtime_error("unsupported uptime option");
+    }
+    command = {"/usr/bin/uptime"};
+    command.insert(command.end(), input.begin(), input.end());
+  } else {
+    throw std::runtime_error("command is not allowlisted");
+  }
+  return command;
+}
+
+CommandResult run_program(std::vector<std::string> program,
+                          const std::filesystem::path& cwd,
+                          int timeout_seconds,
+                          bool sandboxed,
+                          std::size_t max_output,
+                          bool clean_environment,
+                          bool readonly_workspace) {
+  if (program.empty()) throw std::runtime_error("program cannot be empty");
   int pipes[2];
   if (::pipe2(pipes, O_CLOEXEC) != 0) throw std::runtime_error("cannot create command pipe");
   pid_t pid = ::fork();
@@ -463,7 +758,19 @@ CommandResult ToolExecutor::run_process(const std::string& command,
     ::dup2(pipes[1], STDERR_FILENO);
     ::close(pipes[0]);
     ::close(pipes[1]);
-    if (!sandboxed) {
+    std::vector<std::string> arguments;
+    if (sandboxed) {
+      const std::string root = cwd.string();
+      arguments = {
+          "/usr/bin/bwrap", "--die-with-parent", "--new-session", "--unshare-pid",
+          "--unshare-uts", "--unshare-ipc", "--clearenv", "--setenv", "PATH",
+          "/usr/local/bin:/usr/bin", "--setenv", "HOME", root, "--setenv", "LANG",
+          "C.UTF-8", "--ro-bind", "/usr", "/usr", "--ro-bind-try", "/lib", "/lib",
+          "--ro-bind-try", "/lib64", "/lib64", "--ro-bind", "/etc", "/etc",
+          "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+          readonly_workspace ? "--ro-bind" : "--bind", root, root, "--chdir", root};
+      arguments.insert(arguments.end(), program.begin(), program.end());
+    } else {
       if (::chdir(cwd.c_str()) != 0) _exit(126);
       if (clean_environment) {
         ::clearenv();
@@ -471,17 +778,8 @@ CommandResult ToolExecutor::run_process(const std::string& command,
         ::setenv("HOME", cwd.c_str(), 1);
         ::setenv("LANG", "C.UTF-8", 1);
       }
-      ::execl("/usr/bin/sh", "sh", "-lc", command.c_str(), static_cast<char*>(nullptr));
-      _exit(127);
+      arguments = std::move(program);
     }
-    const std::string root = cwd.string();
-    std::vector<std::string> arguments = {
-        "/usr/bin/bwrap", "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-uts",
-        "--unshare-ipc", "--clearenv", "--setenv", "PATH", "/usr/local/bin:/usr/bin",
-        "--setenv", "HOME", root, "--setenv", "LANG", "C.UTF-8", "--ro-bind", "/usr", "/usr",
-        "--ro-bind-try", "/lib", "/lib", "--ro-bind-try", "/lib64", "/lib64",
-        "--ro-bind", "/etc", "/etc", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-        "--bind", root, root, "--chdir", root, "/usr/bin/sh", "-lc", command};
     std::vector<char*> argv;
     argv.reserve(arguments.size() + 1);
     for (auto& argument : arguments) argv.push_back(argument.data());
@@ -523,13 +821,44 @@ CommandResult ToolExecutor::run_process(const std::string& command,
   }
   std::array<char, 8192> tail{};
   while (result.output.size() < max_output) {
-    auto count = ::read(pipes[0], tail.data(), std::min(tail.size(), max_output - result.output.size()));
+    auto count = ::read(pipes[0], tail.data(),
+                        std::min(tail.size(), max_output - result.output.size()));
     if (count <= 0) break;
     result.output.append(tail.data(), static_cast<std::size_t>(count));
   }
   ::close(pipes[0]);
   if (result.output.size() == max_output) result.output += "\n[output truncated]";
   return result;
+}
+
+}  // namespace
+
+std::string ToolExecutor::run_readonly_command(const Json::Value& args) {
+  const auto command = readonly_command(root_, args);
+  const int timeout = std::clamp(args.get("timeout_seconds", 30).asInt(), 1, 60);
+  const bool system_status = command.front() == "/usr/bin/nvidia-smi" ||
+      command.front() == "/usr/bin/uname" || command.front() == "/usr/bin/lscpu" ||
+      command.front() == "/usr/bin/free" || command.front() == "/usr/bin/df" ||
+      command.front() == "/usr/bin/uptime";
+  auto result = run_program(command, root_, timeout, !system_status, 1024ULL * 1024,
+                            system_status, true);
+  Json::Value data(Json::objectValue);
+  data["exit_code"] = result.exit_code;
+  data["output"] = result.output;
+  data["timed_out"] = result.timed_out;
+  data["read_only"] = true;
+  return json_string(ok_result(data));
+}
+
+CommandResult ToolExecutor::run_process(const std::string& command,
+                                        const std::filesystem::path& cwd,
+                                        int timeout_seconds,
+                                        bool sandboxed,
+                                        std::size_t max_output,
+                                        bool clean_environment,
+                                        bool readonly_workspace) {
+  return run_program({"/usr/bin/sh", "-lc", command}, cwd, timeout_seconds, sandboxed,
+                     max_output, clean_environment, readonly_workspace);
 }
 
 std::string ToolExecutor::run_command(const Json::Value& args) {

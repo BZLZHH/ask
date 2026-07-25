@@ -14,6 +14,8 @@ Current version: `0.3.0`
 - Choose automatically, always, or never to continue a first terminal answer in the REPL.
 - Resume an automatically exited conversation by running bare `ask` within 10 seconds.
 - Search history, complete commands, enter multiline prompts, and cancel input or generation with Ctrl-C.
+- Let ordinary ask mode inspect workspace files and selected system status without write access.
+- Let the model request one-time or conversation-scoped do access through an explicit permission screen.
 - Enable local tools with `--do` for files, commands, HTTP requests, web pages, and web search.
 - Run multi-round `model -> tool -> model` agent loops.
 - Isolate model-generated commands with Bubblewrap on Linux.
@@ -73,7 +75,7 @@ ctest --test-dir build --output-on-failure
 Install the executable, README, and license:
 
 ```sh
-sudo cmake --install build
+pkexec cmake --install build
 ```
 
 You can also run `./build/ask` directly.
@@ -201,8 +203,8 @@ When stdin and stdout are both terminals, the configured Conversation entry poli
 | Input | Behavior |
 |---|---|
 | `?COMMAND` | Run a user shell command and retain its output, errors, and exit code as conversation context |
-| `!do PROMPT` | Enable tools for the next turn only |
-| `!ask PROMPT` | Disable all tools for the next turn only |
+| `!do PROMPT` | Enable full tools for the next turn only |
+| `!ask PROMPT` | Force read-only tools for the next turn; permission upgrades are unavailable |
 | `!model` | Switch the provider and model for the current session |
 | `!config` | Open configuration and then return to the current conversation |
 | `!compact` | Ask the current model to summarize older active context |
@@ -219,6 +221,7 @@ Editing behavior:
 - Prefix `!` or `?` with a backslash to enter it literally, for example `\!q`.
 
 `!do` and `!ask` are one-turn overrides. They do not permanently change the session's base mode.
+The REPL labels ordinary mode as `[ask/read-only]` and an upgraded session as `[do]`.
 
 ## Pipelines and Scripts
 
@@ -255,7 +258,42 @@ JSON output has this shape:
 }
 ```
 
-## Do Mode and Security
+## Ask Mode, Do Mode, and Security
+
+Ordinary ask mode exposes only read-only tools:
+
+| Tool | Purpose |
+|---|---|
+| `read_file` | Read part of a regular workspace file |
+| `list_files` | List workspace files and directories without following symlinks |
+| `search_text` | Search literal text in regular workspace files |
+| `run_readonly_command` | Run a command and argument combination from a strict read-only allowlist |
+| `request_do_mode` | Ask the user for explicit do access; the tool call itself grants nothing |
+
+The command allowlist covers workspace inspection with `pwd`, `ls`, `rg`, `stat`, `file`,
+`wc`, `head`, `tail`, and read-only `git status`, `diff`, `log`, or `show`. It also
+supports constrained system-status queries through `nvidia-smi`, `uname`, `lscpu`,
+`free`, `df`, and `uptime`. Each command has its own option whitelist. Workspace commands
+run with a read-only workspace mount, and all commands use a fixed executable with a direct
+argument vector rather than model-controlled shell syntax.
+
+When a requested task needs mutation, the model can describe the reason and concrete operation
+on `ask permission ➔ Do mode`. The permission screen starts on `Deny`; use Up/Down and Enter
+to choose `Allow once` or `Allow for conversation`, or Esc to deny. `Allow once` grants the next
+model response's complete tool-call batch and is then consumed. `Allow for conversation` changes
+only the current conversation and survives save, explicit resume, and 10-second quick resume. It
+does not alter global configuration or new conversations. Without an interactive stdin and stdout,
+permission requests are denied automatically.
+
+Every model request also receives an application-generated runtime permission block after the
+configured system prompt. Before elevation, it identifies `ASK_READ_ONLY`, lists the tools available
+now, lists the additional tools that full do mode would provide, and explains all three approval
+outcomes. The block changes per request to one of `ASK_READ_ONLY`, `FORCED_ASK_READ_ONLY`,
+`DO_FOR_USER_TURN`, `DO_ONCE_THIS_RESPONSE`, or `DO_FOR_CONVERSATION`. In particular, an
+Allow once response tells the model that the complete tool-call batch returned in that response is
+authorized, that returning the response consumes the grant even if it contains no tool calls, and
+that the following model response is read-only again. The runtime block is included in token
+estimation but is never stored as a conversation message or compacted into session history.
 
 Do mode exposes these tools to the model:
 
@@ -264,6 +302,8 @@ Do mode exposes these tools to the model:
 | `read_file` | Read part of a regular file inside the workspace |
 | `write_file` | Write or append a file inside the workspace |
 | `list_files` | List workspace files and directories |
+| `search_text` | Search literal text in workspace files |
+| `run_readonly_command` | Run a strictly allowlisted read-only command |
 | `run_command` | Run a shell command in the Bubblewrap sandbox |
 | `fetch_http` | Fetch a public HTTP resource with SSRF, timeout, and size protections |
 | `browse_page` | Fetch a public web page and convert it to readable text |
@@ -288,11 +328,11 @@ Network tools accept only `http` and `https`. They reject loopback, private, lin
 
 ## Sessions and Context
 
-Sessions, tool calls, and complete message history are stored in SQLite. `ask resume` shows timestamps, titles, modes, providers, models, and recent message previews. Resuming never repeats the last request automatically.
+Sessions, tool calls, permission results, and complete message history are stored in SQLite. `ask resume` shows timestamps, titles, modes, providers, models, and recent message previews. Resuming never repeats the last request automatically. Conversation-scoped do access is restored; one-time access is never persisted.
 
 Before every request, `ask` estimates the size of:
 
-- The system prompt
+- The configured system prompt and current runtime permission block
 - Tool schemas
 - The current compact summary
 - Active messages

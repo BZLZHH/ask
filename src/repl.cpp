@@ -25,6 +25,72 @@ namespace {
 constexpr std::array<std::string_view, 7> kCommands = {
     "!ask", "!compact", "!config", "!do", "!help", "!model", "!q"};
 
+enum class PermissionState { read_only, forced_read_only, do_turn, do_once, do_conversation };
+
+std::string permission_context(PermissionState state, bool tools_available) {
+  std::ostringstream output;
+  output << "[ask runtime permissions]\n";
+  switch (state) {
+    case PermissionState::read_only:
+      output << "Current permission state: ASK_READ_ONLY. You do not currently have permission "
+                "to modify the computer.\n"
+                "Tools available now: read_file, list_files, search_text, "
+                "run_readonly_command, request_do_mode.\n"
+                "Read-only commands are individually allowlisted and cannot run arbitrary shell syntax.\n"
+                "Full DO mode would additionally provide: write_file, run_command, fetch_http, "
+                "browse_page, web_search. These DO tools are not currently granted.\n"
+                "If the user's task requires mutation or a DO-only tool, call request_do_mode with "
+                "a concrete reason, operation, and suggested_scope. The request itself grants nothing. "
+                "The user may Deny, Allow once, or Allow for conversation. Do not claim that an "
+                "operation was performed until the required tool call succeeds.\n";
+      break;
+    case PermissionState::forced_read_only:
+      output << "Current permission state: FORCED_ASK_READ_ONLY for this user turn.\n"
+                "Tools available now: read_file, list_files, search_text, run_readonly_command.\n"
+                "The user explicitly used !ask. You cannot request or obtain DO mode during this "
+                "turn. Full DO tools (write_file, run_command, fetch_http, browse_page, web_search) "
+                "are unavailable.\n";
+      break;
+    case PermissionState::do_turn:
+      output << "Current permission state: DO_FOR_USER_TURN.\n"
+                "The user explicitly used !do. Full tools are available throughout this user turn's "
+                "model/tool loop: read_file, list_files, search_text, run_readonly_command, write_file, "
+                "run_command, fetch_http, browse_page, web_search. This does not change the saved "
+                "conversation mode; the next user turn returns to its base permission state.\n";
+      break;
+    case PermissionState::do_once:
+      output << "Current permission state: DO_ONCE_THIS_RESPONSE.\n"
+                "The user approved one-time DO access. Full tools are available only for this next "
+                "model response and its complete tool-call batch: read_file, list_files, search_text, "
+                "run_readonly_command, write_file, run_command, fetch_http, browse_page, web_search. "
+                "All tool calls returned together in this response share the one-time grant. The grant "
+                "is consumed when this response is returned, even if you make no tool call. Any later "
+                "model response returns to ASK_READ_ONLY unless the user grants permission again.\n";
+      break;
+    case PermissionState::do_conversation:
+      output << "Current permission state: DO_FOR_CONVERSATION.\n"
+                "Full tools are available: read_file, list_files, search_text, run_readonly_command, "
+                "write_file, run_command, fetch_http, browse_page, web_search. This permission belongs "
+                "only to the current conversation and remains active when this conversation is saved, "
+                "quick-resumed, or explicitly resumed. It does not change global configuration or new "
+                "conversations. A user can still force one read-only turn with !ask.\n";
+      break;
+  }
+  if (!tools_available) {
+    output << "No tools are attached to this request because the tool-round limit was reached. "
+              "Return a final answer without requesting tools.\n";
+  }
+  output << "The tool schemas attached to this request are authoritative for what can be called now.\n"
+            "[end ask runtime permissions]";
+  return output.str();
+}
+
+std::string with_permission_context(const std::string& configured, PermissionState state,
+                                    bool tools_available) {
+  const auto runtime = permission_context(state, tools_available);
+  return configured.empty() ? runtime : configured + "\n\n" + runtime;
+}
+
 volatile std::sig_atomic_t* active_cancellation = nullptr;
 
 void cancel_generation(int) {
@@ -150,8 +216,9 @@ std::string history_path() {
 }
 
 void print_help() {
-  std::cout << "!do PROMPT       use tools for one turn\n"
-               "!ask PROMPT      disable tools for one turn\n"
+  std::cout << "ask mode         read files, search, and run allowlisted read-only commands\n"
+               "!do PROMPT       use full tools for one turn\n"
+               "!ask PROMPT      force read-only tools for one turn\n"
                "!model           choose provider and model\n"
                "!config          open settings\n"
                "!compact         summarize older context\n"
@@ -192,11 +259,13 @@ void Conversation::persist() {
   if (config_.settings.save_sessions) session_store_.save(session_);
 }
 
-bool Conversation::maybe_compact(const std::string& pending, bool do_mode) {
+bool Conversation::maybe_compact(const std::string& pending, bool do_mode,
+                                 const std::string& system_prompt) {
   auto messages = active_messages(session_);
   if (!pending.empty()) messages.push_back({"user", pending, {}, {}});
-  auto schema = do_mode ? tools_.schemas() : Json::Value();
-  const auto predicted = estimate_tokens(messages, config_.settings.system_prompt, schema) +
+  auto schema = tools_.schemas(do_mode ? ToolExecutor::Access::full
+                                      : ToolExecutor::Access::read_only);
+  const auto predicted = estimate_tokens(messages, system_prompt, schema) +
                          static_cast<std::size_t>(config_.settings.max_output_tokens);
   const auto threshold = static_cast<std::size_t>(
       static_cast<double>(provider().context_window) * config_.settings.auto_compact_ratio);
@@ -205,13 +274,65 @@ bool Conversation::maybe_compact(const std::string& pending, bool do_mode) {
     messages = active_messages(session_);
     if (!pending.empty()) messages.push_back({"user", pending, {}, {}});
   }
-  const auto after = estimate_tokens(messages, config_.settings.system_prompt, schema) +
+  const auto after = estimate_tokens(messages, system_prompt, schema) +
                      static_cast<std::size_t>(config_.settings.max_output_tokens);
   if (after >= static_cast<std::size_t>(provider().context_window)) {
     std::cerr << "ask: input does not fit the configured context window even after compaction\n";
     return false;
   }
   return true;
+}
+
+std::string Conversation::handle_do_mode_request(const std::string& arguments,
+                                                 bool& allow_once_for_next_batch) {
+  Json::CharReaderBuilder reader;
+  Json::Value input;
+  std::string errors;
+  std::istringstream stream(arguments.empty() ? "{}" : arguments);
+  Json::Value output(Json::objectValue);
+  if (!Json::parseFromStream(reader, stream, &input, &errors) || !input.isObject()) {
+    output["ok"] = false;
+    output["error"] = "permission request arguments are not a JSON object";
+    return json_string(output);
+  }
+  const auto reason = input.get("reason", "").asString();
+  const auto operation = input.get("operation", "").asString();
+  const auto scope = input.get("suggested_scope", "once").asString();
+  if (reason.empty() || operation.empty() ||
+      (scope != "once" && scope != "conversation")) {
+    output["ok"] = false;
+    output["error"] = "permission request requires reason, operation and a valid suggested_scope";
+    return json_string(output);
+  }
+  const auto approval = Tui::approve_do_mode(reason, operation, scope);
+  if (approval == DoModeApproval::deny) {
+    output["ok"] = false;
+    output["error"] = "user denied do mode";
+    output["data"]["permission_state"] = "ASK_READ_ONLY";
+    output["data"]["granted"] = "deny";
+    return json_string(output);
+  }
+  output["ok"] = true;
+  output["data"]["operation"] = operation;
+  if (approval == DoModeApproval::once) {
+    allow_once_for_next_batch = true;
+    output["data"]["granted"] = "once";
+    output["data"]["permission_state"] = "DO_ONCE_NEXT_RESPONSE";
+    output["data"]["applies_to"] = "next model response and its complete tool-call batch";
+    output["data"]["after_consumption"] = "ASK_READ_ONLY";
+    output["data"]["persisted"] = false;
+    std::cerr << "ask: do mode allowed for the next tool batch\n";
+  } else {
+    options_.do_mode = true;
+    session_.do_mode = true;
+    persist();
+    output["data"]["granted"] = "conversation";
+    output["data"]["permission_state"] = "DO_FOR_CONVERSATION";
+    output["data"]["applies_to"] = "current conversation, including save and resume";
+    output["data"]["persisted"] = true;
+    std::cerr << "ask: do mode enabled for this conversation\n";
+  }
+  return json_string(output);
 }
 
 bool Conversation::compact(bool automatic) {
@@ -254,8 +375,16 @@ bool Conversation::compact(bool automatic) {
 }
 
 bool Conversation::send(const std::string& input, std::optional<bool> one_shot_do) {
-  const bool do_mode = one_shot_do.value_or(options_.do_mode);
-  if (!maybe_compact(input, do_mode)) return false;
+  const bool initial_do_mode = one_shot_do.value_or(options_.do_mode);
+  const bool force_read_only = one_shot_do.has_value() && !*one_shot_do;
+  const bool allow_escalation = !one_shot_do.has_value() && !initial_do_mode;
+  const auto initial_state = force_read_only ? PermissionState::forced_read_only
+      : one_shot_do.has_value() ? PermissionState::do_turn
+      : options_.do_mode ? PermissionState::do_conversation
+                         : PermissionState::read_only;
+  const auto initial_system_prompt =
+      with_permission_context(config_.settings.system_prompt, initial_state, true);
+  if (!maybe_compact(input, initial_do_mode, initial_system_prompt)) return false;
   session_.messages.push_back({"user", input, {}, {}});
   if (session_.title.empty()) {
     session_.title = input.substr(0, 80);
@@ -264,16 +393,30 @@ bool Conversation::send(const std::string& input, std::optional<bool> one_shot_d
   persist();
   bool line_open = false;
   try {
-    const auto schemas = do_mode ? tools_.schemas() : Json::Value();
     int tool_rounds = 0;
+    bool allow_once_for_next_batch = false;
     for (;;) {
-      const bool tools_allowed = do_mode && tool_rounds < config_.settings.max_tool_rounds;
+      const bool full_access = !force_read_only &&
+          (initial_do_mode || options_.do_mode || allow_once_for_next_batch);
+      const bool once_for_this_batch = allow_once_for_next_batch;
+      allow_once_for_next_batch = false;
+      const bool tools_allowed = tool_rounds < config_.settings.max_tool_rounds;
+      const auto permission_state = force_read_only ? PermissionState::forced_read_only
+          : once_for_this_batch ? PermissionState::do_once
+          : one_shot_do.has_value() ? PermissionState::do_turn
+          : options_.do_mode ? PermissionState::do_conversation
+                             : PermissionState::read_only;
+      const auto request_system_prompt = with_permission_context(
+          config_.settings.system_prompt, permission_state, tools_allowed);
+      const auto schemas = tools_.schemas(
+          full_access ? ToolExecutor::Access::full : ToolExecutor::Access::read_only,
+          allow_escalation);
       const auto& request_schemas = tools_allowed ? schemas : Json::Value::nullSingleton();
       ChatResponse response;
       if (options_.stream_output) {
         GenerationSignalGuard signals(cancelled_);
         response = client_.stream(
-            provider(), options_.model, active_messages(session_), config_.settings.system_prompt,
+            provider(), options_.model, active_messages(session_), request_system_prompt,
             config_.settings, request_schemas, 0,
             [&](std::string_view delta) {
               if (delta.empty()) return;
@@ -288,7 +431,10 @@ bool Conversation::send(const std::string& input, std::optional<bool> one_shot_d
         }
       } else {
         response = client_.complete(provider(), options_.model, active_messages(session_),
-                                    config_.settings.system_prompt, config_.settings, request_schemas);
+                                    request_system_prompt, config_.settings, request_schemas);
+      }
+      if (once_for_this_batch && !options_.quiet) {
+        std::cerr << "ask: one-time do mode consumed; returning to read-only\n";
       }
       Message assistant{"assistant", response.content, {}, response.tool_calls};
       session_.messages.push_back(assistant);
@@ -321,9 +467,22 @@ bool Conversation::send(const std::string& input, std::optional<bool> one_shot_d
         std::cerr << "ask: model requested tools after the tool round limit\n";
         return false;
       }
+      bool permission_request_seen = false;
       for (const auto& call : response.tool_calls) {
         if (!options_.quiet) std::cerr << "ask: tool " << call.name << '\n';
-        auto result = tools_.execute(call.name, call.arguments);
+        std::string result;
+        if (call.name == "request_do_mode") {
+          if (full_access || !allow_escalation || permission_request_seen) {
+            result = "{\"ok\":false,\"error\":\"do mode request is not available\"}";
+          } else {
+            permission_request_seen = true;
+            result = handle_do_mode_request(call.arguments, allow_once_for_next_batch);
+          }
+        } else {
+          result = tools_.execute(call.name, call.arguments,
+                                  full_access ? ToolExecutor::Access::full
+                                              : ToolExecutor::Access::read_only);
+        }
         session_.messages.push_back({"tool", result, call.id, {}});
         persist();
       }
@@ -382,7 +541,8 @@ int Conversation::repl() {
   const auto history = history_path();
   read_history(history.c_str());
   std::cerr << "ask: " << options_.provider << '/' << options_.model
-            << (options_.do_mode ? " [do]" : " [ask]") << "  (!help for commands)\n";
+            << (options_.do_mode ? " [do]" : " [ask/read-only]")
+            << "  (!help for commands)\n";
   for (;;) {
     errno = 0;
     char* raw = readline(options_.do_mode ? "do> " : "ask> ");

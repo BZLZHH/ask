@@ -125,6 +125,14 @@ class Provider(BaseHTTPRequestHandler):
             self.send_json({"error": {"message": "orphaned tool result"}}, 400)
             return
         system = next((m.get("content", "") for m in messages if m.get("role") == "system"), "")
+        tool_names = {
+            tool.get("function", {}).get("name") for tool in request.get("tools", [])
+        }
+        last_tool_name = ""
+        for item in reversed(messages):
+            if item.get("role") == "assistant" and item.get("tool_calls"):
+                last_tool_name = item["tool_calls"][0].get("function", {}).get("name", "")
+                break
         if request.get("stream"):
             last_role = messages[-1].get("role") if messages else ""
             user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
@@ -143,19 +151,62 @@ class Provider(BaseHTTPRequestHandler):
                     {"choices": [{"delta": {"content": "final"}, "finish_reason": "stop"}]},
                     "[DONE]",
                 ])
-            elif request.get("tools") and last_role == "user":
+            elif last_role == "user" and user == "read workspace":
                 self.send_sse([
                     {"choices": [{"delta": {"tool_calls": [{
-                        "index": 0, "id": "call-write", "type": "function",
-                        "function": {"name": "write_file", "arguments": "{\"path\":\"made-"},
-                    }]}, "finish_reason": None}]},
-                    {"choices": [{"delta": {"tool_calls": [{
-                        "index": 0, "function": {
-                            "arguments": "by-tool.txt\",\"content\":\"tool worked\"}"
-                        },
+                        "index": 0, "id": "call-read", "type": "function",
+                        "function": {"name": "read_file",
+                                     "arguments": "{\"path\":\"readonly-source.txt\"}"},
                     }]}, "finish_reason": "tool_calls"}]},
                     "[DONE]",
                 ])
+            elif last_role == "user" and user.startswith("upgrade ") and "request_do_mode" in tool_names:
+                scope = "conversation" if user == "upgrade conversation" else "once"
+                arguments = json.dumps({
+                    "reason": "The requested task needs a file change",
+                    "operation": "Create the approved marker file",
+                    "suggested_scope": scope,
+                })
+                self.send_sse([
+                    {"choices": [{"delta": {"tool_calls": [{
+                        "index": 0, "id": "call-upgrade", "type": "function",
+                        "function": {"name": "request_do_mode", "arguments": arguments},
+                    }]}, "finish_reason": "tool_calls"}]},
+                    "[DONE]",
+                ])
+            elif last_role == "user" and "write_file" in tool_names:
+                target = "conversation-second.txt" if user == "conversation second write" \
+                    else "made-by-tool.txt"
+                self.send_sse([
+                    {"choices": [{"delta": {"tool_calls": [{
+                        "index": 0, "id": "call-write", "type": "function",
+                        "function": {"name": "write_file", "arguments": json.dumps({
+                            "path": target, "content": "tool worked"
+                        })},
+                    }]}, "finish_reason": "tool_calls"}]},
+                    "[DONE]",
+                ])
+            elif last_role == "tool" and last_tool_name == "request_do_mode":
+                granted = messages[-1].get("content", "").find('"ok":true') >= 0
+                if granted and "write_file" in tool_names:
+                    grant = "conversation" if \
+                        messages[-1].get("content", "").find('"conversation"') >= 0 \
+                        else "once"
+                    self.send_sse([
+                        {"choices": [{"delta": {"tool_calls": [{
+                            "index": 0, "id": "call-approved-write", "type": "function",
+                            "function": {"name": "write_file", "arguments": json.dumps({
+                                "path": f"approved-{grant}.txt", "content": "approved"
+                            })},
+                        }]}, "finish_reason": "tool_calls"}]},
+                        "[DONE]",
+                    ])
+                else:
+                    self.send_sse([
+                        {"choices": [{"delta": {"content": "permission denied"},
+                                      "finish_reason": "stop"}]},
+                        "[DONE]",
+                    ])
             elif last_role == "tool":
                 self.send_sse([
                     {"choices": [{"delta": {"content": "tool "}, "finish_reason": None}]},
@@ -202,25 +253,92 @@ class Provider(BaseHTTPRequestHandler):
             content = "compact memory"
             message = {"role": "assistant", "content": content}
             finish = "stop"
-        elif request.get("tools") and messages and messages[-1].get("role") == "user":
-            message = {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{
-                    "id": "call-write",
-                    "type": "function",
-                    "function": {
-                        "name": "write_file",
-                        "arguments": json.dumps({"path": "made-by-tool.txt", "content": "tool worked"}),
-                    },
-                }],
-            }
-            finish = "tool_calls"
+        elif messages and messages[-1].get("role") == "user":
+            user = next((m.get("content", "") for m in reversed(messages)
+                         if m.get("role") == "user"), "")
+            if user == "read workspace" and "read_file" in tool_names:
+                message = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call-read",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": json.dumps({"path": "readonly-source.txt"}),
+                        },
+                    }],
+                }
+                finish = "tool_calls"
+            elif user.startswith("upgrade " ) and "request_do_mode" in tool_names:
+                scope = "conversation" if user == "upgrade conversation" else "once"
+                message = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call-upgrade",
+                        "type": "function",
+                        "function": {
+                            "name": "request_do_mode",
+                            "arguments": json.dumps({
+                                "reason": "The requested task needs a file change",
+                                "operation": "Create the approved marker file",
+                                "suggested_scope": scope,
+                            }),
+                        },
+                    }],
+                }
+                finish = "tool_calls"
+            elif "write_file" in tool_names:
+                target = "conversation-second.txt" if user == "conversation second write" \
+                    else "made-by-tool.txt"
+                message = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call-write",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": json.dumps({"path": target, "content": "tool worked"}),
+                        },
+                    }],
+                }
+                finish = "tool_calls"
+            else:
+                message = {"role": "assistant", "content": "echo: " + user}
+                finish = "stop"
+        elif messages and messages[-1].get("role") == "tool" and \
+                last_tool_name == "request_do_mode":
+            granted = messages[-1].get("content", "").find('"ok":true') >= 0
+            if granted and "write_file" in tool_names:
+                grant = "conversation" if \
+                    messages[-1].get("content", "").find('"conversation"') >= 0 \
+                    else "once"
+                message = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call-approved-write",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": json.dumps({
+                                "path": f"approved-{grant}.txt", "content": "approved"
+                            }),
+                        },
+                    }],
+                }
+                finish = "tool_calls"
+            else:
+                message = {"role": "assistant", "content": "permission denied"}
+                finish = "stop"
         elif messages and messages[-1].get("role") == "tool":
             message = {"role": "assistant", "content": "tool complete"}
             finish = "stop"
         else:
-            user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
+            user = next((m.get("content", "") for m in reversed(messages)
+                         if m.get("role") == "user"), "")
             message = {"role": "assistant", "content": "echo: " + user}
             finish = "stop"
         self.send_json({
@@ -532,6 +650,313 @@ def stop_pty(terminal):
     terminal.close()
 
 
+def permission_environment(root, env, server, name, entry_mode="always_continue"):
+    workspace = root / (name + "-workspace")
+    config_home = root / (name + "-config")
+    data_home = root / (name + "-data")
+    workspace.mkdir()
+    config_home.mkdir()
+    (workspace / "readonly-source.txt").write_text("read-only fixture\n")
+    config = protocol_config(
+        "openai", f"http://127.0.0.1:{server.server_port}/v1", "mock-model"
+    )
+    config["settings"].update({
+        "conversation_entry_mode": entry_mode,
+        "stream_output": True,
+    })
+    (config_home / "config.json").write_text(json.dumps(config))
+    permission_env = env.copy()
+    permission_env["ASK_CONFIG_HOME"] = str(config_home)
+    permission_env["ASK_DATA_HOME"] = str(data_home)
+    return workspace, permission_env, data_home
+
+
+def request_tool_names(request):
+    return {
+        tool.get("function", {}).get("name")
+        for tool in request[1].get("tools", [])
+    }
+
+
+def request_system_prompt(request):
+    path, body = request
+    if path == "/v1/chat/completions":
+        systems = [message.get("content", "") for message in body.get("messages", [])
+                   if message.get("role") == "system"]
+        assert len(systems) == 1, body
+        return systems[0]
+    if path == "/v1/messages":
+        return body.get("system", "")
+    if "GenerateContent" in path or "generateContent" in path:
+        parts = body.get("systemInstruction", {}).get("parts", [])
+        assert len(parts) == 1, body
+        return parts[0].get("text", "")
+    raise AssertionError(request)
+
+
+def assert_permission_context(request, state):
+    prompt = request_system_prompt(request)
+    assert prompt.startswith("Test assistant\n\n[ask runtime permissions]\n"), prompt
+    assert f"Current permission state: {state}" in prompt, prompt
+    assert prompt.endswith("[end ask runtime permissions]"), prompt
+    if state == "ASK_READ_ONLY":
+        assert "Full DO mode would additionally provide:" in prompt, prompt
+        assert "write_file, run_command, fetch_http, browse_page, web_search" in prompt, prompt
+        assert "Deny, Allow once, or Allow for conversation" in prompt, prompt
+    elif state == "DO_ONCE_THIS_RESPONSE":
+        assert "complete tool-call batch" in prompt, prompt
+        assert "consumed when this response is returned" in prompt, prompt
+        assert "later model response returns to ASK_READ_ONLY" in prompt, prompt
+    elif state == "DO_FOR_CONVERSATION":
+        assert "quick-resumed, or explicitly resumed" in prompt, prompt
+        assert "does not change global configuration" in prompt, prompt
+    elif state == "DO_FOR_USER_TURN":
+        assert "user explicitly used !do" in prompt, prompt
+        assert "next user turn returns" in prompt, prompt
+    elif state == "FORCED_ASK_READ_ONLY":
+        assert "user explicitly used !ask" in prompt, prompt
+        assert "cannot request or obtain DO mode" in prompt, prompt
+    if request[0] == "/v1/chat/completions":
+        non_system = [message.get("content") for message in request[1].get("messages", [])
+                      if message.get("role") != "system"]
+        assert all("[ask runtime permissions]" not in (content or "")
+                   for content in non_system), request[1]
+
+
+def tool_result_data(request, tool_name):
+    messages = request[1].get("messages", [])
+    call_ids = {}
+    for message in messages:
+        for call in message.get("tool_calls", []):
+            call_ids[call.get("id")] = call.get("function", {}).get("name")
+    for message in reversed(messages):
+        if message.get("role") == "tool" and \
+                call_ids.get(message.get("tool_call_id")) == tool_name:
+            return json.loads(message.get("content", "{}"))
+    raise AssertionError((tool_name, request))
+
+
+def assert_readonly_tools(request, escalation=True):
+    names = request_tool_names(request)
+    expected = {"read_file", "list_files", "search_text", "run_readonly_command"}
+    assert expected <= names, names
+    assert "write_file" not in names and "run_command" not in names, names
+    assert ("request_do_mode" in names) == escalation, names
+
+
+def assert_full_tools(request):
+    names = request_tool_names(request)
+    assert {"read_file", "write_file", "run_command", "web_search"} <= names, names
+    assert "request_do_mode" not in names, names
+
+
+def exercise_permissions(binary, server, root, env):
+    workspace, read_env, _ = permission_environment(root, env, server, "permission-read")
+    before = request_count(server)
+    result = subprocess.run(
+        [binary, "--no-repl", "read workspace"], cwd=workspace, env=read_env,
+        stdin=subprocess.DEVNULL, text=True, capture_output=True, check=True
+    )
+    assert result.stdout == "tool complete\n", result
+    requests = request_slice(server, before)
+    assert len(requests) == 2, requests
+    assert_readonly_tools(requests[0])
+    assert_readonly_tools(requests[1])
+    assert_permission_context(requests[0], "ASK_READ_ONLY")
+    assert_permission_context(requests[1], "ASK_READ_ONLY")
+
+    workspace, deny_env, _ = permission_environment(root, env, server, "permission-deny")
+    before = request_count(server)
+    terminal = PtyProcess([binary, "upgrade once"], workspace, deny_env)
+    try:
+        terminal.expect("ask permission ➔ Do mode")
+        terminal.send(b"\x1b")
+        output = terminal.expect("ask> ")
+        assert b"permission denied" in output, output
+        assert not (workspace / "approved-once.txt").exists()
+        terminal.send(b"!q\n")
+        assert terminal.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(terminal)
+    requests = request_slice(server, before)
+    assert len(requests) == 2, requests
+    assert_readonly_tools(requests[0])
+    assert_readonly_tools(requests[1])
+    assert_permission_context(requests[0], "ASK_READ_ONLY")
+    assert_permission_context(requests[1], "ASK_READ_ONLY")
+    denied_data = tool_result_data(requests[1], "request_do_mode")
+    assert denied_data["data"]["permission_state"] == "ASK_READ_ONLY", denied_data
+    assert denied_data["data"]["granted"] == "deny", denied_data
+
+    workspace, once_env, _ = permission_environment(root, env, server, "permission-once")
+    before = request_count(server)
+    terminal = PtyProcess([binary, "upgrade once"], workspace, once_env)
+    try:
+        terminal.expect("ask permission ➔ Do mode")
+        terminal.expect(b"> Deny")
+        terminal.send(b"\x1bOB")
+        terminal.expect(b"> Allow once")
+        terminal.send(b"\n")
+        output = terminal.expect("ask> ")
+        assert b"one-time do mode consumed" in output, output
+        assert (workspace / "approved-once.txt").read_text() == "approved"
+        terminal.send(b"after once\n")
+        terminal.expect("ask> ")
+        terminal.send(b"!q\n")
+        assert terminal.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(terminal)
+    requests = request_slice(server, before)
+    assert len(requests) == 4, requests
+    assert_readonly_tools(requests[0])
+    assert_full_tools(requests[1])
+    assert_readonly_tools(requests[2])
+    assert_readonly_tools(requests[3])
+    assert_permission_context(requests[0], "ASK_READ_ONLY")
+    assert_permission_context(requests[1], "DO_ONCE_THIS_RESPONSE")
+    assert_permission_context(requests[2], "ASK_READ_ONLY")
+    assert_permission_context(requests[3], "ASK_READ_ONLY")
+    once_data = tool_result_data(requests[1], "request_do_mode")
+    assert once_data["data"]["permission_state"] == "DO_ONCE_NEXT_RESPONSE", once_data
+    assert once_data["data"]["applies_to"] == (
+        "next model response and its complete tool-call batch"
+    ), once_data
+    assert once_data["data"]["after_consumption"] == "ASK_READ_ONLY", once_data
+    assert once_data["data"]["persisted"] is False, once_data
+
+    workspace, conversation_env, _ = permission_environment(
+        root, env, server, "permission-conversation"
+    )
+    before = request_count(server)
+    terminal = PtyProcess([binary, "upgrade conversation"], workspace, conversation_env)
+    try:
+        terminal.expect("ask permission ➔ Do mode")
+        terminal.expect(b"> Deny")
+        terminal.send(b"\x1bOB")
+        terminal.expect(b"> Allow once")
+        terminal.send(b"\x1bOB")
+        terminal.expect(b"> Allow for conversation")
+        terminal.send(b"\n")
+        terminal.expect("do> ")
+        assert (workspace / "approved-conversation.txt").read_text() == "approved"
+        terminal.send(b"conversation second write\n")
+        terminal.expect("do> ")
+        assert (workspace / "conversation-second.txt").read_text() == "tool worked"
+        terminal.send(b"!ask conversation second write\n")
+        terminal.expect("do> ")
+        terminal.send(b"!q\n")
+        assert terminal.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(terminal)
+    requests = request_slice(server, before)
+    assert len(requests) == 6, requests
+    assert_readonly_tools(requests[0])
+    assert_full_tools(requests[1])
+    assert_full_tools(requests[2])
+    assert_full_tools(requests[3])
+    assert_full_tools(requests[4])
+    assert_readonly_tools(requests[5], escalation=False)
+    assert_permission_context(requests[0], "ASK_READ_ONLY")
+    for request in requests[1:5]:
+        assert_permission_context(request, "DO_FOR_CONVERSATION")
+    assert_permission_context(requests[5], "FORCED_ASK_READ_ONLY")
+    conversation_data = tool_result_data(requests[1], "request_do_mode")
+    assert conversation_data["data"]["permission_state"] == (
+        "DO_FOR_CONVERSATION"
+    ), conversation_data
+    assert conversation_data["data"]["persisted"] is True, conversation_data
+
+    before = request_count(server)
+    resumed = PtyProcess([binary, "resume"], workspace, conversation_env)
+    try:
+        resumed.expect("resume conversation")
+        resumed.send(b"\n")
+        resumed.expect("[do]")
+        resumed.expect("do> ")
+        resumed.send(b"after explicit resume\n")
+        resumed.expect("do> ")
+        resumed.send(b"!q\n")
+        assert resumed.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(resumed)
+    resumed_requests = request_slice(server, before)
+    assert len(resumed_requests) == 2, resumed_requests
+    for request in resumed_requests:
+        assert_full_tools(request)
+        assert_permission_context(request, "DO_FOR_CONVERSATION")
+
+    workspace, non_tty_env, _ = permission_environment(root, env, server, "permission-non-tty")
+    before = request_count(server)
+    denied = subprocess.run(
+        [binary, "--no-repl", "upgrade once"], cwd=workspace, env=non_tty_env,
+        stdin=subprocess.DEVNULL, text=True, capture_output=True, check=True
+    )
+    assert denied.stdout == "permission denied\n", denied
+    assert not (workspace / "approved-once.txt").exists()
+    requests = request_slice(server, before)
+    assert len(requests) == 2, requests
+    assert_readonly_tools(requests[0])
+    assert_readonly_tools(requests[1])
+    assert_permission_context(requests[0], "ASK_READ_ONLY")
+    assert_permission_context(requests[1], "ASK_READ_ONLY")
+
+    workspace, one_turn_env, _ = permission_environment(root, env, server, "permission-do-turn")
+    before = request_count(server)
+    terminal = PtyProcess([binary], workspace, one_turn_env)
+    try:
+        terminal.expect("ask> ")
+        terminal.send(b"!do conversation second write\n")
+        terminal.expect("ask> ")
+        terminal.send(b"after do turn\n")
+        terminal.expect("ask> ")
+        terminal.send(b"!q\n")
+        assert terminal.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(terminal)
+    requests = request_slice(server, before)
+    assert len(requests) == 3, requests
+    assert_full_tools(requests[0])
+    assert_full_tools(requests[1])
+    assert_readonly_tools(requests[2])
+    assert_permission_context(requests[0], "DO_FOR_USER_TURN")
+    assert_permission_context(requests[1], "DO_FOR_USER_TURN")
+    assert_permission_context(requests[2], "ASK_READ_ONLY")
+
+    workspace, quick_env, _ = permission_environment(
+        root, env, server, "permission-quick", "always_exit"
+    )
+    terminal = PtyProcess([binary, "upgrade conversation"], workspace, quick_env)
+    try:
+        terminal.expect("ask permission ➔ Do mode")
+        terminal.expect(b"> Deny")
+        terminal.send(b"\x1bOB")
+        terminal.expect(b"> Allow once")
+        terminal.send(b"\x1bOB")
+        terminal.expect(b"> Allow for conversation")
+        terminal.send(b"\n")
+        terminal.expect("tool complete")
+        assert terminal.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(terminal)
+    before = request_count(server)
+    resumed = PtyProcess([binary], workspace, quick_env)
+    try:
+        resumed.expect("ask: resumed ")
+        resumed.expect("[do]")
+        resumed.expect("do> ")
+        resumed.send(b"after quick resume\n")
+        resumed.expect("do> ")
+        resumed.send(b"!q\n")
+        assert resumed.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(resumed)
+    resumed_requests = request_slice(server, before)
+    assert len(resumed_requests) == 2, resumed_requests
+    for request in resumed_requests:
+        assert_full_tools(request)
+        assert_permission_context(request, "DO_FOR_CONVERSATION")
+
+
 def exercise_entry_policy(binary, server, root, env):
     continue_env, _ = entry_policy_environment(
         root, env, server, "entry-always-continue", "always_continue"
@@ -583,7 +1008,7 @@ def exercise_entry_policy(binary, server, root, env):
     resumed = PtyProcess([binary], root, exit_env)
     try:
         resumed.expect("ask: resumed ")
-        resumed.expect("[ask]")
+        resumed.expect("[ask/read-only]")
         resumed.expect("ask> ")
         resumed.send(b"!q\n")
         assert resumed.process.wait(timeout=5) == 0
@@ -777,9 +1202,12 @@ def exercise_generation_settings(binary, server, root, env):
     assert path == "/v1/chat/completions", (path, body)
     assert body["stream"] is False and body["model"] == "mock-model", body
     assert body["messages"][-1]["content"] == "openai settings", body
-    assert body["messages"][0]["content"] == "Test assistant", body
-    for protected in ("contents", "system", "systemInstruction", "tools", "tool_choice"):
+    assert_permission_context(requests[-1], "ASK_READ_ONLY")
+    for protected in ("contents", "system", "systemInstruction"):
         assert protected not in body, (protected, body)
+    assert_readonly_tools(requests[-1])
+    assert body["tool_choice"] == "auto", body
+    assert all(tool.get("blocked") is not True for tool in body["tools"]), body
     assert body["temperature"] == 0.35 and body["top_p"] == 0.8, body
     assert body["reasoning_effort"] == "medium", body
     assert body["response_format"] == {"type": "json_object"}, body
@@ -827,6 +1255,7 @@ def exercise_generation_settings(binary, server, root, env):
     assert body["thinking"] == {"type": "enabled", "budget_tokens": 1200}, body
     assert "temperature" not in body and "top_p" not in body, body
     assert body["max_tokens"] == 1300, body
+    assert_permission_context(requests[-1], "ASK_READ_ONLY")
 
     anthropic["settings"]["stream_output"] = True
     anthropic["settings"]["custom_parameters"] = {}
@@ -838,6 +1267,7 @@ def exercise_generation_settings(binary, server, root, env):
     assert body["stream"] is True, body
     assert body["thinking"] == {"type": "enabled", "budget_tokens": 1200}, body
     assert "temperature" not in body and "top_p" not in body, body
+    assert_permission_context(requests[-1], "ASK_READ_ONLY")
 
     gemini = protocol_config("gemini", base + "/v1beta", "gemini-2.5-flash")
     gemini["settings"].update({
@@ -860,6 +1290,7 @@ def exercise_generation_settings(binary, server, root, env):
     assert generation["thinkingConfig"] == {
         "includeThoughts": False, "thinkingBudget": -1
     }, generation
+    assert_permission_context(requests[-1], "ASK_READ_ONLY")
 
     gemini["settings"]["stream_output"] = False
     _, requests = run_protocol_call(
@@ -871,6 +1302,7 @@ def exercise_generation_settings(binary, server, root, env):
     generation = body["generationConfig"]
     assert generation["temperature"] == 0.4 and generation["topP"] == 0.9, generation
     assert generation["thinkingConfig"]["thinkingBudget"] == -1, generation
+    assert_permission_context(requests[-1], "ASK_READ_ONLY")
 
 
 def exercise_protocols_and_auto_compact(binary, server, root, env):
@@ -898,13 +1330,13 @@ def exercise_protocols_and_auto_compact(binary, server, root, env):
     compact_config = protocol_config(
         "openai", f"http://127.0.0.1:{server.server_port}/v1", "mock-model"
     )
-    compact_config["providers"][0]["context_window"] = 1024
+    compact_config["providers"][0]["context_window"] = 8192
     compact_config["settings"]["max_output_tokens"] = 256
     (compact_home / "config.json").write_text(json.dumps(compact_config))
     compact_env = env.copy()
     compact_env["ASK_CONFIG_HOME"] = str(compact_home)
     compact_env["ASK_DATA_HOME"] = str(root / "compact-data")
-    terminal = PtyProcess([binary, "x" * 1350], root, compact_env)
+    terminal = PtyProcess([binary, "x" * 10000], root, compact_env)
     try:
         terminal.expect("ask> ")
         terminal.send(b"second\n")
@@ -1004,6 +1436,7 @@ def run(binary):
             assert (root / "made-by-tool.txt").read_text() == "tool worked"
             assert (data_home / "sessions.db").exists()
             exercise_repl(binary, root, env)
+            exercise_permissions(binary, server, root, env)
             exercise_entry_policy(binary, server, root, env)
             exercise_protocols_and_auto_compact(binary, server, root, env)
             exercise_generation_settings(binary, server, root, env)

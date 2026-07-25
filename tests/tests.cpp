@@ -198,10 +198,69 @@ void test_tools(const std::filesystem::path& root) {
   auto workspace = root / "workspace";
   std::filesystem::create_directories(workspace);
   ask::ToolExecutor tools(workspace, [](const auto&, const auto&, const auto&) { return false; });
+  auto readonly_schemas = tools.schemas(ask::ToolExecutor::Access::read_only);
+  std::string readonly_names;
+  for (const auto& schema : readonly_schemas) {
+    readonly_names += schema["function"].get("name", "").asString() + " ";
+  }
+  expect(readonly_names.find("read_file") != std::string::npos &&
+             readonly_names.find("list_files") != std::string::npos &&
+             readonly_names.find("search_text") != std::string::npos &&
+             readonly_names.find("run_readonly_command") != std::string::npos &&
+             readonly_names.find("request_do_mode") != std::string::npos,
+         "ask mode exposes read-only tools and the explicit upgrade request");
+  expect(readonly_names.find("write_file") == std::string::npos &&
+             readonly_names.find("run_command") == std::string::npos,
+         "ask mode schema does not expose mutating tools");
+  auto forced_readonly = tools.schemas(ask::ToolExecutor::Access::read_only, false);
+  std::string forced_names;
+  for (const auto& schema : forced_readonly) {
+    forced_names += schema["function"].get("name", "").asString() + " ";
+  }
+  expect(forced_names.find("request_do_mode") == std::string::npos,
+         "forced read-only turns cannot request an upgrade");
   auto write = tools.execute("write_file", R"({"path":"nested/file.txt","content":"hello"})");
   expect(write.find("\"ok\":true") != std::string::npos, "write_file succeeds inside workspace");
   auto read = tools.execute("read_file", R"({"path":"nested/file.txt"})");
   expect(read.find("hello") != std::string::npos, "read_file returns written content");
+  auto search = tools.execute("search_text", R"({"query":"hello","path":"."})",
+                              ask::ToolExecutor::Access::read_only);
+  expect(search.find("nested/file.txt") != std::string::npos,
+         "ask mode can search workspace text");
+  auto blocked_write = tools.execute(
+      "write_file", R"({"path":"blocked.txt","content":"no"})",
+      ask::ToolExecutor::Access::read_only);
+  expect(blocked_write.find("requires do mode") != std::string::npos &&
+             !std::filesystem::exists(workspace / "blocked.txt"),
+         "ask mode rejects a forged mutating tool call");
+  auto readonly_head = tools.execute(
+      "run_readonly_command",
+      R"({"command":"head","arguments":["-n","1","nested/file.txt"]})",
+      ask::ToolExecutor::Access::read_only);
+  expect(readonly_head.find("hello") != std::string::npos,
+         "ask mode runs an allowlisted read-only command");
+  auto system_status = tools.execute(
+      "run_readonly_command", R"({"command":"uname","arguments":["-s"]})",
+      ask::ToolExecutor::Access::read_only);
+  expect(system_status.find("Linux") != std::string::npos,
+         "ask mode can inspect allowlisted system status");
+  auto blocked_system_option = tools.execute(
+      "run_readonly_command", R"({"command":"nvidia-smi","arguments":["-pm","1"]})",
+      ask::ToolExecutor::Access::read_only);
+  expect(blocked_system_option.find("unsupported nvidia-smi option") != std::string::npos,
+         "read-only system status rejects mutating nvidia-smi options");
+  auto shell_escape = tools.execute(
+      "run_readonly_command",
+      R"({"command":"ls","arguments":[".; touch escaped.txt"]})",
+      ask::ToolExecutor::Access::read_only);
+  expect(!shell_escape.empty() && !std::filesystem::exists(workspace / "escaped.txt"),
+         "read-only command arguments cannot inject shell operations");
+  auto git_write = tools.execute(
+      "run_readonly_command",
+      R"({"command":"git","arguments":["checkout","HEAD"]})",
+      ask::ToolExecutor::Access::read_only);
+  expect(git_write.find("unsupported git subcommand") != std::string::npos,
+         "read-only command rejects mutating git subcommands");
   auto escape = tools.execute("read_file", R"({"path":"../../etc/passwd"})");
   expect(escape.find("\"ok\":false") != std::string::npos, "path traversal is rejected");
 

@@ -222,7 +222,7 @@ std::string usage() {
 Options:
   -p, --provider ID    Override the configured provider for this session
   -m, --model MODEL    Override the configured model for this session
-      --do             Start the session with workspace tools enabled
+      --do             Start the session with full workspace tools enabled
   -i, --interactive    Enter the REPL even when input was piped
       --no-repl        Exit after one response
       --no-stream      Wait for the complete response before printing
@@ -232,6 +232,8 @@ Options:
   -h, --help           Show this help
       --version        Show the version
 
+Ask mode has read-only workspace and allowlisted system-status tools.
+The model may request do access interactively; non-TTY permission requests are denied.
 Piped stdin is combined after an explicit prompt. Non-TTY use is one-shot by default.
 A bare ask resumes an automatically exited conversation for up to 10 seconds.
 )USAGE";

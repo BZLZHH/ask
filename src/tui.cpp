@@ -15,6 +15,7 @@
 #include <vector>
 
 #include <ncurses.h>
+#include <unistd.h>
 
 namespace ask {
 namespace {
@@ -53,6 +54,14 @@ std::string clipped(const std::string& text, int width) {
   if (static_cast<int>(text.size()) <= width) return text;
   if (width <= 3) return text.substr(0, static_cast<std::size_t>(width));
   return text.substr(0, static_cast<std::size_t>(width - 3)) + "...";
+}
+
+std::string safe_display_text(std::string text) {
+  for (char& character : text) {
+    const auto value = static_cast<unsigned char>(character);
+    if (value == 0x1b || (value < 0x20 && character != '	')) character = ' ';
+  }
+  return text;
 }
 
 void heading(const std::string& text, bool dirty = false) {
@@ -1125,6 +1134,52 @@ bool Tui::choose_model(const Config& config, std::string& provider, std::string&
   provider = choices[static_cast<std::size_t>(*choice)].first;
   model = choices[static_cast<std::size_t>(*choice)].second;
   return true;
+}
+
+DoModeApproval Tui::approve_do_mode(const std::string& reason,
+                                    const std::string& operation,
+                                    const std::string& suggested_scope) {
+  if (!::isatty(STDIN_FILENO) || !::isatty(STDOUT_FILENO)) return DoModeApproval::deny;
+  Screen screen;
+  const std::array<std::string, 3> labels = {
+      "Deny", "Allow once", "Allow for conversation"};
+  const std::string suggestion = suggested_scope == "conversation"
+      ? "Model suggests: Allow for conversation" : "Model suggests: Allow once";
+  int selected = 0;
+  for (;;) {
+    heading("ask permission ➔ Do mode");
+    mvaddnstr(3, 2, "The model requests permission to modify the computer.",
+              std::max(0, COLS - 4));
+    attron(A_BOLD);
+    mvaddnstr(5, 2, "Reason", std::max(0, COLS - 4));
+    attroff(A_BOLD);
+    const auto safe_reason = safe_display_text(reason);
+    mvaddnstr(6, 4, clipped(safe_reason, std::max(0, COLS - 6)).c_str(),
+              std::max(0, COLS - 6));
+    attron(A_BOLD);
+    mvaddnstr(8, 2, "Operation", std::max(0, COLS - 4));
+    attroff(A_BOLD);
+    const auto safe_operation = safe_display_text(operation);
+    mvaddnstr(9, 4, clipped(safe_operation, std::max(0, COLS - 6)).c_str(),
+              std::max(0, COLS - 6));
+    mvaddnstr(11, 2, suggestion.c_str(), std::max(0, COLS - 4));
+    for (int index = 0; index < static_cast<int>(labels.size()); ++index) {
+      setting_row(12 + index, index == selected, labels[static_cast<std::size_t>(index)],
+                  index == 1 ? "Next tool batch only"
+                  : index == 2 ? "Saved with this conversation" : "Remain read-only");
+    }
+    footer("Up/Down navigate  Enter select  Esc deny");
+    refresh();
+    const int key = getch();
+    if (is_up(key) && selected > 0) --selected;
+    else if (is_down(key) && selected + 1 < static_cast<int>(labels.size())) ++selected;
+    else if (is_escape(key) || is_left(key)) return DoModeApproval::deny;
+    else if (is_enter(key) || is_right(key)) {
+      if (selected == 1) return DoModeApproval::once;
+      if (selected == 2) return DoModeApproval::conversation;
+      return DoModeApproval::deny;
+    }
+  }
 }
 
 }  // namespace ask
