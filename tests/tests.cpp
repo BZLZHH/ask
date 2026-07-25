@@ -71,6 +71,9 @@ void test_config(const std::filesystem::path& root) {
   config.settings.thinking_budget_tokens = 2048;
   config.settings.stream_output = false;
   config.settings.custom_parameters["response_format"]["type"] = "json_object";
+  config.settings.conversation_entry_mode = "automatic";
+  config.settings.judge_provider = "ollama";
+  config.settings.judge_model = "qwen3:8b";
   store.save(config);
   auto loaded = store.load();
   expect(loaded.default_provider == "ollama", "config default provider round trips");
@@ -85,6 +88,11 @@ void test_config(const std::filesystem::path& root) {
   expect(!loaded.settings.stream_output, "stream output preference round trips");
   expect(loaded.settings.custom_parameters["response_format"]["type"] == "json_object",
          "custom request parameters round trip");
+  expect(loaded.settings.conversation_entry_mode == "automatic",
+         "conversation entry mode round trips");
+  expect(loaded.settings.judge_provider == "ollama" &&
+             loaded.settings.judge_model == "qwen3:8b",
+         "judge provider and model round trip");
   struct stat info {};
   expect(::stat(path.c_str(), &info) == 0 && (info.st_mode & 0777) == 0600,
          "config is stored with mode 0600");
@@ -96,6 +104,9 @@ void test_config(const std::filesystem::path& root) {
   invalid["settings"]["thinking_budget_tokens"] = -12;
   invalid["settings"]["max_output_tokens"] = 2000000;
   invalid["settings"]["custom_parameters"] = Json::Value(Json::arrayValue);
+  invalid["settings"]["conversation_entry_mode"] = "impossible";
+  invalid["settings"]["judge_provider"] = "missing";
+  invalid["settings"]["judge_model"] = "missing-model";
   {
     std::ofstream output(path);
     output << invalid;
@@ -114,6 +125,11 @@ void test_config(const std::filesystem::path& root) {
   expect(sanitized.settings.custom_parameters.isObject() &&
              sanitized.settings.custom_parameters.empty(),
          "non-object custom parameters fall back to an empty object");
+  expect(sanitized.settings.conversation_entry_mode == "always_continue",
+         "invalid conversation entry mode preserves legacy behavior");
+  expect(sanitized.settings.judge_provider == sanitized.default_provider &&
+             sanitized.settings.judge_model == sanitized.default_model,
+         "invalid judge selection falls back to the default model");
 
   auto legacy = ask::config_to_json(ask::ConfigStore::defaults());
   legacy["settings"].removeMember("temperature");
@@ -122,6 +138,9 @@ void test_config(const std::filesystem::path& root) {
   legacy["settings"].removeMember("thinking_budget_tokens");
   legacy["settings"].removeMember("stream_output");
   legacy["settings"].removeMember("custom_parameters");
+  legacy["settings"].removeMember("conversation_entry_mode");
+  legacy["settings"].removeMember("judge_provider");
+  legacy["settings"].removeMember("judge_model");
   {
     std::ofstream output(path);
     output << legacy;
@@ -132,6 +151,8 @@ void test_config(const std::filesystem::path& root) {
   expect(compatible.settings.reasoning_effort == "default" &&
              compatible.settings.thinking_budget_tokens == 0 && compatible.settings.stream_output,
          "legacy configs receive safe AI call defaults");
+  expect(compatible.settings.conversation_entry_mode == "always_continue",
+         "legacy configs continue entering conversations");
 }
 
 void test_sessions(const std::filesystem::path& root) {
@@ -155,6 +176,18 @@ void test_sessions(const std::filesystem::path& root) {
   expect(loaded->messages[1].tool_calls[0].name == "read_file", "tool calls round trip");
   expect(loaded->active_from == 1 && loaded->summary == "old facts", "compact view round trips");
   expect(!store.list().empty(), "session appears in listing");
+  store.mark_quick_resume(session);
+  struct stat quick_info {};
+  expect(::stat(store.quick_resume_path().c_str(), &quick_info) == 0 &&
+             (quick_info.st_mode & 0777) == 0600,
+         "quick resume state is stored with mode 0600");
+  auto quick = store.consume_quick_resume(root);
+  expect(quick && quick->id == session.id && quick->messages.size() == session.messages.size(),
+         "quick resume snapshot preserves the conversation");
+  expect(!store.consume_quick_resume(root), "quick resume state is consumed only once");
+  store.mark_quick_resume(session);
+  expect(!store.consume_quick_resume(root / "other"),
+         "quick resume state cannot cross working directories");
   expect(store.remove(session.id), "session can be deleted");
   struct stat info {};
   expect(::stat(path.c_str(), &info) == 0 && (info.st_mode & 0777) == 0600,

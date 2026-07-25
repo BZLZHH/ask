@@ -2,12 +2,14 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <random>
 #include <sstream>
 #include <stdexcept>
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "ask/config.hpp"
 
@@ -78,10 +80,70 @@ std::vector<ToolCall> calls_from_json(const std::string& text) {
   return calls;
 }
 
+Json::Value session_to_json(const Session& session) {
+  Json::Value root(Json::objectValue);
+  root["id"] = session.id;
+  root["title"] = session.title;
+  root["provider"] = session.provider;
+  root["model"] = session.model;
+  root["do_mode"] = session.do_mode;
+  root["cwd"] = session.cwd;
+  root["created_at"] = Json::Int64(session.created_at);
+  root["updated_at"] = Json::Int64(session.updated_at);
+  root["summary"] = session.summary;
+  root["active_from"] = Json::UInt64(session.active_from);
+  Json::Value messages(Json::arrayValue);
+  for (const auto& message : session.messages) {
+    Json::Value item(Json::objectValue);
+    item["role"] = message.role;
+    item["content"] = message.content;
+    item["tool_call_id"] = message.tool_call_id;
+    Json::CharReaderBuilder reader;
+    Json::Value calls;
+    std::string errors;
+    std::istringstream input(calls_to_json(message.tool_calls));
+    if (!Json::parseFromStream(reader, input, &calls, &errors)) calls = Json::Value(Json::arrayValue);
+    item["tool_calls"] = calls;
+    messages.append(item);
+  }
+  root["messages"] = messages;
+  return root;
+}
+
+std::optional<Session> session_from_json(const Json::Value& root) {
+  if (!root.isObject() || !root["id"].isString() || !root["cwd"].isString() ||
+      !root["messages"].isArray()) return std::nullopt;
+  Session session;
+  session.id = root["id"].asString();
+  session.title = root.get("title", "").asString();
+  session.provider = root.get("provider", "").asString();
+  session.model = root.get("model", "").asString();
+  session.do_mode = root.get("do_mode", false).asBool();
+  session.cwd = root["cwd"].asString();
+  session.created_at = root.get("created_at", 0).asInt64();
+  session.updated_at = root.get("updated_at", 0).asInt64();
+  session.summary = root.get("summary", "").asString();
+  session.active_from = static_cast<std::size_t>(root.get("active_from", 0).asUInt64());
+  for (const auto& item : root["messages"]) {
+    if (!item.isObject()) return std::nullopt;
+    Message message;
+    message.role = item.get("role", "").asString();
+    message.content = item.get("content", "").asString();
+    message.tool_call_id = item.get("tool_call_id", "").asString();
+    Json::StreamWriterBuilder writer;
+    writer["indentation"] = "";
+    message.tool_calls = calls_from_json(Json::writeString(writer, item["tool_calls"]));
+    session.messages.push_back(std::move(message));
+  }
+  if (session.id.empty() || session.provider.empty() || session.model.empty()) return std::nullopt;
+  return session;
+}
+
 }  // namespace
 
 SessionStore::SessionStore(std::filesystem::path path) {
   if (path.empty()) path = default_path();
+  path_ = path;
   std::error_code ec;
   std::filesystem::create_directories(path.parent_path(), ec);
   if (ec) throw std::runtime_error("cannot create data directory: " + ec.message());
@@ -96,6 +158,65 @@ SessionStore::SessionStore(std::filesystem::path path) {
   ::chmod(path.c_str(), 0600);
   sqlite3_busy_timeout(db_, 3000);
   initialize();
+}
+
+std::filesystem::path SessionStore::quick_resume_path() const {
+  return path_.parent_path() / "quick-resume.json";
+}
+
+void SessionStore::clear_quick_resume() {
+  std::error_code error;
+  std::filesystem::remove(quick_resume_path(), error);
+}
+
+void SessionStore::mark_quick_resume(const Session& session) {
+  Json::Value root(Json::objectValue);
+  root["marked_at"] = Json::Int64(now_seconds());
+  root["session"] = session_to_json(session);
+  auto path = quick_resume_path();
+  auto temporary = path;
+  temporary += ".tmp." + std::to_string(::getpid());
+  {
+    std::ofstream output(temporary, std::ios::trunc);
+    if (!output) throw std::runtime_error("cannot write quick resume state");
+    Json::StreamWriterBuilder writer;
+    writer["indentation"] = "  ";
+    output << Json::writeString(writer, root) << '\n';
+    output.flush();
+    if (!output) throw std::runtime_error("failed while writing quick resume state");
+  }
+  ::chmod(temporary.c_str(), 0600);
+  std::error_code error;
+  std::filesystem::rename(temporary, path, error);
+  if (error) {
+    std::filesystem::remove(temporary);
+    throw std::runtime_error("cannot replace quick resume state: " + error.message());
+  }
+}
+
+std::optional<Session> SessionStore::consume_quick_resume(const std::filesystem::path& cwd,
+                                                          int max_age_seconds) {
+  auto path = quick_resume_path();
+  auto claimed = path;
+  claimed += ".consume." + std::to_string(::getpid());
+  std::error_code error;
+  std::filesystem::rename(path, claimed, error);
+  if (error) return std::nullopt;
+  struct Cleanup {
+    std::filesystem::path path;
+    ~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); }
+  } cleanup{claimed};
+  std::ifstream input(claimed);
+  Json::CharReaderBuilder reader;
+  Json::Value root;
+  std::string errors;
+  if (!input || !Json::parseFromStream(reader, input, &root, &errors)) return std::nullopt;
+  const auto marked_at = root.get("marked_at", 0).asInt64();
+  const auto age = now_seconds() - marked_at;
+  if (marked_at <= 0 || age < 0 || age > max_age_seconds) return std::nullopt;
+  auto session = session_from_json(root["session"]);
+  if (!session || session->cwd != cwd.string()) return std::nullopt;
+  return session;
 }
 
 SessionStore::~SessionStore() {

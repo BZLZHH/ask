@@ -180,7 +180,25 @@ class Provider(BaseHTTPRequestHandler):
                     "[DONE]",
                 ])
             return
-        if system.startswith("Create a compact"):
+        if system.startswith("You classify whether a terminal user"):
+            judge_input = next((m.get("content", "") for m in messages
+                                if m.get("role") == "user"), "")
+            if "judge failure" in judge_input:
+                self.send_json({"error": {"message": "judge unavailable"}}, 500)
+                return
+            if "judge continue" in judge_input:
+                content = "CONTINUE"
+            elif "judge wrapped exit" in judge_input:
+                content = "```text\nDecision: EXIT.\n```"
+            elif "judge ambiguous" in judge_input:
+                content = "Use CONTINUE rather than EXIT"
+            elif "judge invalid" in judge_input:
+                content = "MAYBE"
+            else:
+                content = "EXIT"
+            message = {"role": "assistant", "content": content}
+            finish = "stop"
+        elif system.startswith("Create a compact"):
             content = "compact memory"
             message = {"role": "assistant", "content": content}
             finish = "stop"
@@ -362,6 +380,16 @@ def exercise_repl(binary, root, env):
         configuration.send(b"\x1b")
         configuration.expect("Connections")
         configuration.send(down + b"\n")
+        configuration.expect("➔ Conversation entry")
+        configuration.send(b"\x1bOD")
+        configuration.expect("Automatic")
+        configuration.send(down + b"\n")
+        configuration.expect("➔ Judge model")
+        configuration.send(down + b"\n")
+        configuration.expect("mock / mock-model-2")
+        configuration.send(b"\x1b")
+        configuration.expect("Connections")
+        configuration.send(down + b"\n")
         configuration.expect("➔ Providers")
         configuration.send(b"\n")
         configuration.expect("➔ Mock")
@@ -389,6 +417,9 @@ def exercise_repl(binary, root, env):
         assert saved["settings"]["max_output_tokens"] == 768, saved
         assert saved["settings"]["stream_output"] is False, saved
         assert saved["settings"]["custom_parameters"] == {"seed": 7}, saved
+        assert saved["settings"]["conversation_entry_mode"] == "automatic", saved
+        assert saved["settings"]["judge_provider"] == "mock", saved
+        assert saved["settings"]["judge_model"] == "mock-model-2", saved
     finally:
         if configuration.process.poll() is None:
             configuration.process.kill()
@@ -436,6 +467,263 @@ def protocol_config(protocol, base_url, model):
             "system_prompt": "Test assistant",
         },
     }
+
+
+def request_slice(server, before):
+    with server.requests_lock:
+        return server.requests[before:]
+
+
+def request_count(server):
+    with server.requests_lock:
+        return len(server.requests)
+
+
+def entry_policy_environment(root, env, server, name, mode):
+    config_home = root / (name + "-config")
+    data_home = root / (name + "-data")
+    config_home.mkdir()
+    config = protocol_config(
+        "openai", f"http://127.0.0.1:{server.server_port}/v1", "mock-model"
+    )
+    config["providers"][0].update({
+        "id": "mock",
+        "name": "Mock",
+        "models": ["mock-model", "mock-model-2"],
+        "default_model": "mock-model",
+    })
+    config["default_provider"] = "mock"
+    config["settings"].update({
+        "conversation_entry_mode": mode,
+        "judge_provider": "mock",
+        "judge_model": "mock-model-2",
+    })
+    (config_home / "config.json").write_text(json.dumps(config))
+    policy_env = env.copy()
+    policy_env["ASK_CONFIG_HOME"] = str(config_home)
+    policy_env["ASK_DATA_HOME"] = str(data_home)
+    return policy_env, data_home
+
+
+def assert_judge_request(request, original_prompt):
+    path, body = request
+    assert path == "/v1/chat/completions", request
+    assert body["model"] == "mock-model-2", body
+    assert body["stream"] is False, body
+    assert body["max_tokens"] == 128, body
+    assert body["temperature"] == 0.0, body
+    assert "reasoning_effort" not in body, body
+    assert "tools" not in body and "tool_choice" not in body, body
+    assert len(body["messages"]) == 2, body
+    assert body["messages"][0]["role"] == "system", body
+    assert body["messages"][0]["content"].startswith(
+        "You classify whether a terminal user"
+    ), body
+    assert body["messages"][1]["role"] == "user", body
+    assert original_prompt in body["messages"][1]["content"], body
+    assert "echo: " + original_prompt in body["messages"][1]["content"], body
+
+
+def stop_pty(terminal):
+    if terminal.process.poll() is None:
+        terminal.process.kill()
+        terminal.process.wait()
+    terminal.close()
+
+
+def exercise_entry_policy(binary, server, root, env):
+    continue_env, _ = entry_policy_environment(
+        root, env, server, "entry-always-continue", "always_continue"
+    )
+    before = request_count(server)
+    terminal = PtyProcess([binary, "always continue"], root, continue_env)
+    try:
+        terminal.expect("ask> ")
+        assert len(request_slice(server, before)) == 1, request_slice(server, before)
+        terminal.send(b"!q\n")
+        assert terminal.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(terminal)
+
+    deepseek_env, _ = entry_policy_environment(
+        root, env, server, "entry-deepseek-judge", "automatic"
+    )
+    deepseek_config_path = pathlib.Path(deepseek_env["ASK_CONFIG_HOME"]) / "config.json"
+    deepseek_config = json.loads(deepseek_config_path.read_text())
+    deepseek_config["providers"][0]["id"] = "deepseek"
+    deepseek_config["providers"][0]["name"] = "DeepSeek"
+    deepseek_config["default_provider"] = "deepseek"
+    deepseek_config["settings"]["judge_provider"] = "deepseek"
+    deepseek_config_path.write_text(json.dumps(deepseek_config))
+    before = request_count(server)
+    terminal = PtyProcess([binary, "judge exit deepseek"], root, deepseek_env)
+    try:
+        terminal.expect("echo: judge exit deepseek")
+        assert terminal.process.wait(timeout=5) == 0
+        requests = request_slice(server, before)
+        assert len(requests) == 2, requests
+        assert requests[1][1]["reasoning_effort"] == "low", requests[1]
+    finally:
+        stop_pty(terminal)
+
+    exit_env, exit_data = entry_policy_environment(
+        root, env, server, "entry-always-exit", "always_exit"
+    )
+    before = request_count(server)
+    terminal = PtyProcess([binary, "always exit"], root, exit_env)
+    try:
+        terminal.expect("echo: always exit")
+        assert terminal.process.wait(timeout=5) == 0
+        assert len(request_slice(server, before)) == 1, request_slice(server, before)
+        assert (exit_data / "quick-resume.json").exists()
+    finally:
+        stop_pty(terminal)
+
+    resumed = PtyProcess([binary], root, exit_env)
+    try:
+        resumed.expect("ask: resumed ")
+        resumed.expect("[ask]")
+        resumed.expect("ask> ")
+        resumed.send(b"!q\n")
+        assert resumed.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(resumed)
+
+    consumed = PtyProcess([binary], root, exit_env)
+    try:
+        fresh = consumed.expect("ask> ")
+        assert b"resumed" not in fresh, fresh
+        consumed.send(b"!q\n")
+        assert consumed.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(consumed)
+
+    for prompt, expect_repl, expect_error in (
+        ("judge exit", False, False),
+        ("judge wrapped exit", False, False),
+        ("judge continue", True, False),
+        ("judge ambiguous", True, True),
+        ("judge invalid", True, True),
+        ("judge failure", True, True),
+    ):
+        name = prompt.replace(" ", "-")
+        policy_env, policy_data = entry_policy_environment(
+            root, env, server, "entry-" + name, "automatic"
+        )
+        before = request_count(server)
+        terminal = PtyProcess([binary, prompt], root, policy_env)
+        try:
+            if expect_repl:
+                output = terminal.expect("ask> ")
+                if expect_error:
+                    assert b"judge failed; continuing conversation" in output, output
+                terminal.send(b"!q\n")
+                assert terminal.process.wait(timeout=5) == 0
+            else:
+                terminal.expect("echo: " + prompt)
+                assert terminal.process.wait(timeout=5) == 0
+                assert (policy_data / "quick-resume.json").exists()
+            requests = request_slice(server, before)
+            assert len(requests) == 2, requests
+            assert_judge_request(requests[1], prompt)
+        finally:
+            stop_pty(terminal)
+
+    priority_env, _ = entry_policy_environment(
+        root, env, server, "entry-priority", "automatic"
+    )
+    for arguments in (
+        ["--no-repl", "judge exit no repl"],
+        ["--json", "judge exit json"],
+    ):
+        before = request_count(server)
+        terminal = PtyProcess([binary, *arguments], root, priority_env)
+        try:
+            assert terminal.process.wait(timeout=8) == 0
+            assert len(request_slice(server, before)) == 1, request_slice(server, before)
+        finally:
+            stop_pty(terminal)
+
+    before = request_count(server)
+    interactive = PtyProcess([binary, "-i", "judge exit interactive"], root, priority_env)
+    try:
+        interactive.expect("ask> ")
+        assert len(request_slice(server, before)) == 1, request_slice(server, before)
+        interactive.send(b"!q\n")
+        assert interactive.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(interactive)
+
+    before = request_count(server)
+    piped = subprocess.run(
+        [binary, "judge exit piped"], cwd=root, env=priority_env,
+        input="pipe body\n", text=True, capture_output=True, check=True
+    )
+    assert piped.stdout == "echo: judge exit piped\n\npipe body\n", piped
+    assert len(request_slice(server, before)) == 1, request_slice(server, before)
+
+    do_env, _ = entry_policy_environment(
+        root, env, server, "entry-do", "always_exit"
+    )
+    terminal = PtyProcess([binary, "--do", "do quick resume"], root, do_env)
+    try:
+        terminal.expect("tool complete")
+        assert terminal.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(terminal)
+    resumed = PtyProcess([binary], root, do_env)
+    try:
+        resumed.expect("ask: resumed ")
+        resumed.expect("[do]")
+        resumed.expect("do> ")
+        resumed.send(b"!q\n")
+        assert resumed.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(resumed)
+
+    expired_env, expired_data = entry_policy_environment(
+        root, env, server, "entry-expired", "always_exit"
+    )
+    terminal = PtyProcess([binary, "expire this"], root, expired_env)
+    try:
+        terminal.expect("echo: expire this")
+        assert terminal.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(terminal)
+    quick_path = expired_data / "quick-resume.json"
+    quick = json.loads(quick_path.read_text())
+    quick["marked_at"] = int(time.time()) - 30
+    quick_path.write_text(json.dumps(quick))
+    expired = PtyProcess([binary], root, expired_env)
+    try:
+        fresh = expired.expect("ask> ")
+        assert b"resumed" not in fresh, fresh
+        expired.send(b"!q\n")
+        assert expired.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(expired)
+
+    explicit_env, explicit_data = entry_policy_environment(
+        root, env, server, "entry-explicit", "always_exit"
+    )
+    terminal = PtyProcess([binary, "old request"], root, explicit_env)
+    try:
+        terminal.expect("echo: old request")
+        assert terminal.process.wait(timeout=5) == 0
+        assert (explicit_data / "quick-resume.json").exists()
+    finally:
+        stop_pty(terminal)
+    replacement = PtyProcess([binary, "new request"], root, explicit_env)
+    try:
+        output = replacement.expect("echo: new request")
+        assert b"resumed" not in output, output
+        assert replacement.process.wait(timeout=5) == 0
+        quick = json.loads((explicit_data / "quick-resume.json").read_text())
+        messages = quick["session"]["messages"]
+        assert any(m.get("content") == "new request" for m in messages), messages
+        assert all(m.get("content") != "old request" for m in messages), messages
+    finally:
+        stop_pty(replacement)
 
 
 def run_protocol_call(binary, server, root, env, name, config, *arguments):
@@ -715,6 +1003,7 @@ def run(binary):
             assert (root / "made-by-tool.txt").read_text() == "tool worked"
             assert (data_home / "sessions.db").exists()
             exercise_repl(binary, root, env)
+            exercise_entry_policy(binary, server, root, env)
             exercise_protocols_and_auto_compact(binary, server, root, env)
             exercise_generation_settings(binary, server, root, env)
     finally:

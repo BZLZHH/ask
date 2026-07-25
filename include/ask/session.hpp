@@ -25,9 +25,15 @@ class SessionStore {
   std::optional<Session> load(const std::string& id) const;
   std::vector<Session> list(std::size_t limit = 100) const;
   bool remove(const std::string& id);
+  void mark_quick_resume(const Session& session);
+  void clear_quick_resume();
+  std::optional<Session> consume_quick_resume(const std::filesystem::path& cwd,
+                                              int max_age_seconds = 10);
+  std::filesystem::path quick_resume_path() const;
 
  private:
   void initialize();
+  std::filesystem::path path_;
   sqlite3* db_{nullptr};
 };
 

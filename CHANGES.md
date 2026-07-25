@@ -7,6 +7,19 @@ This file records user-visible changes to `ask`.
 ### Added
 
 - Added a GitHub Actions Linux build matrix for Debug and Release artifacts with SHA-256 checksums.
+- Added configurable first-response behavior: Automatic, Always continue, and Always exit.
+- Added an independent Judge provider/model that classifies whether an interactive conversation should continue, with safe fallback to the REPL on failure or invalid output.
+- Added one-time 10-second quick resume for automatically exited conversations, including restored provider, model, history, working directory, and do mode.
+- Added a hierarchical `ask settings ➔ Conversation entry` page using direction keys, Enter, and Esc.
+
+### Changed
+
+- `--json` now remains one-shot even when run directly from a terminal.
+- `--no-repl`, `--json`, piped/non-TTY calls, and explicit `-i` bypass automatic Judge evaluation.
+
+### Fixed
+
+- Judge calls now use provider-compatible minimal Thinking controls, reserve enough output tokens for a final decision, and accept unambiguous quoted or Markdown-wrapped `CONTINUE`/`EXIT` responses.
 
 ## 0.3.0 - 2026-07-25
 

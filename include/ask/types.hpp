@@ -37,6 +37,9 @@ struct Settings {
   Json::Value custom_parameters{Json::objectValue};
   bool save_sessions{true};
   std::string system_prompt;
+  std::string conversation_entry_mode{"always_continue"};
+  std::string judge_provider;
+  std::string judge_model;
 };
 
 struct Config {

@@ -831,20 +831,96 @@ void ai_call_page(Config& config, const Config& original) {
   }
 }
 
+std::string conversation_entry_text(const std::string& mode) {
+  if (mode == "automatic") return "Automatic";
+  if (mode == "always_exit") return "Always exit";
+  return "Always continue";
+}
+
+void conversation_entry_page(Config& config, const Config& original) {
+  static constexpr std::array<std::string_view, 2> labels = {
+      "After first response", "Judge model"};
+  static constexpr std::array<std::string_view, 3> modes = {
+      "automatic", "always_continue", "always_exit"};
+  int selected = 0;
+  for (;;) {
+    heading(settings_path({"Conversation entry"}), config_dirty(original, config));
+    mvaddnstr(2, 2, "Choose whether a new terminal conversation stays open.",
+              std::max(0, COLS - 4));
+    for (int index = 0; index < static_cast<int>(labels.size()); ++index) {
+      std::string value;
+      if (index == 0) value = conversation_entry_text(config.settings.conversation_entry_mode);
+      else value = config.settings.judge_provider + " / " + config.settings.judge_model;
+      setting_row(4 + index, index == selected,
+                  std::string(labels[static_cast<std::size_t>(index)]), value, true);
+    }
+    mvaddnstr(8, 2, "Automatic uses the Judge model after the first answer.",
+              std::max(0, COLS - 4));
+    mvaddnstr(9, 2, "Automatic and Always exit allow one quick resume for 10 seconds.",
+              std::max(0, COLS - 4));
+    footer("Up/Down navigate  Left/Right change  Enter select  Esc back");
+    refresh();
+    const int key = getch();
+    if (is_up(key) && selected > 0) --selected;
+    else if (is_down(key) && selected + 1 < static_cast<int>(labels.size())) ++selected;
+    else if (is_escape(key)) return;
+    else if ((is_left(key) || is_right(key)) && selected == 0) {
+      auto current = std::find(modes.begin(), modes.end(), config.settings.conversation_entry_mode);
+      int position = current == modes.end() ? 0 : static_cast<int>(std::distance(modes.begin(), current));
+      const int direction = is_right(key) ? 1 : -1;
+      position = (position + direction + static_cast<int>(modes.size())) %
+                 static_cast<int>(modes.size());
+      config.settings.conversation_entry_mode = modes[static_cast<std::size_t>(position)];
+    } else if (is_enter(key) || is_right(key)) {
+      if (selected == 0) {
+        std::vector<std::string> options;
+        int current = 0;
+        for (int index = 0; index < static_cast<int>(modes.size()); ++index) {
+          options.push_back(conversation_entry_text(std::string(modes[static_cast<std::size_t>(index)])));
+          if (modes[static_cast<std::size_t>(index)] == config.settings.conversation_entry_mode) {
+            current = index;
+          }
+        }
+        auto choice = select_menu(settings_path({"Conversation entry", "After first response"}),
+                                  options, current);
+        if (choice) config.settings.conversation_entry_mode =
+            modes[static_cast<std::size_t>(*choice)];
+      } else {
+        const auto choices = model_choices(config);
+        std::vector<std::string> options;
+        int current = 0;
+        for (std::size_t index = 0; index < choices.size(); ++index) {
+          options.push_back(choices[index].first + " / " + choices[index].second);
+          if (choices[index].first == config.settings.judge_provider &&
+              choices[index].second == config.settings.judge_model) current = static_cast<int>(index);
+        }
+        auto choice = select_menu(settings_path({"Conversation entry", "Judge model"}),
+                                  options, current,
+                                  "Used only when After first response is Automatic.");
+        if (choice) {
+          config.settings.judge_provider = choices[static_cast<std::size_t>(*choice)].first;
+          config.settings.judge_model = choices[static_cast<std::size_t>(*choice)].second;
+        }
+      }
+    }
+  }
+}
+
 enum class RootAction { save, cancel };
 
 RootAction general_page(Config& config, const Config& original, ChatClient* client) {
-  static constexpr std::array<std::string_view, 9> labels = {
+  static constexpr std::array<std::string_view, 10> labels = {
       "Default model", "Save conversations", "Auto compact ratio", "Maximum tool rounds",
-      "System prompt", "AI call", "Providers", "Cancel", "Save changes"};
+      "System prompt", "AI call", "Conversation entry", "Providers", "Cancel",
+      "Save changes"};
   int selected = 0;
   for (;;) {
     const bool dirty = config_dirty(original, config);
     heading(settings_path(), dirty);
     mvaddnstr(2, 2, "General", std::max(0, COLS - 4));
     mvaddnstr(9, 2, "Advanced", std::max(0, COLS - 4));
-    mvaddnstr(12, 2, "Connections", std::max(0, COLS - 4));
-    static constexpr std::array<int, 9> rows = {3, 4, 5, 6, 7, 10, 13, 16, 17};
+    mvaddnstr(13, 2, "Connections", std::max(0, COLS - 4));
+    static constexpr std::array<int, 10> rows = {3, 4, 5, 6, 7, 10, 11, 14, 17, 18};
     for (int index = 0; index < static_cast<int>(labels.size()); ++index) {
       std::string value;
       bool opens = false;
@@ -860,14 +936,21 @@ RootAction general_page(Config& config, const Config& original, ChatClient* clie
           opens = true;
           break;
         case 6:
+          value = conversation_entry_text(config.settings.conversation_entry_mode);
+          if (config.settings.conversation_entry_mode == "automatic") {
+            value += " / " + config.settings.judge_provider + " / " + config.settings.judge_model;
+          }
+          opens = true;
+          break;
+        case 7:
           value = std::to_string(config.providers.size()) + " configured / " +
                   std::to_string(std::count_if(config.providers.begin(), config.providers.end(),
                                                [](const Provider& provider) { return provider.enabled; })) +
                   " enabled";
           opens = true;
           break;
-        case 7: value = dirty ? "Discard draft" : "Exit settings"; opens = true; break;
-        case 8: value = dirty ? "Write config and exit" : "No changes"; opens = true; break;
+        case 8: value = dirty ? "Discard draft" : "Exit settings"; opens = true; break;
+        case 9: value = dirty ? "Write config and exit" : "No changes"; opens = true; break;
       }
       setting_row(rows[static_cast<std::size_t>(index)], index == selected,
                   std::string(labels[static_cast<std::size_t>(index)]), value, opens);
@@ -907,10 +990,12 @@ RootAction general_page(Config& config, const Config& original, ChatClient* clie
       } else if (selected == 5) {
         ai_call_page(config, original);
       } else if (selected == 6) {
-        providers_page(config, original, client);
+        conversation_entry_page(config, original);
       } else if (selected == 7) {
-        return RootAction::cancel;
+        providers_page(config, original, client);
       } else if (selected == 8) {
+        return RootAction::cancel;
+      } else if (selected == 9) {
         return RootAction::save;
       }
     }

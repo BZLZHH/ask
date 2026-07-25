@@ -11,7 +11,8 @@ Current version: `0.3.0`
 - Stream responses from OpenAI-compatible, Anthropic, and Gemini APIs.
 - Configure providers, models, endpoints, credentials, headers, and context limits in a full-screen TUI.
 - Resume persistent conversations through a session picker with message previews.
-- Continue every terminal conversation in a libedit-powered REPL.
+- Choose automatically, always, or never to continue a first terminal answer in the REPL.
+- Resume an automatically exited conversation by running bare `ask` within 10 seconds.
 - Search history, complete commands, enter multiline prompts, and cancel input or generation with Ctrl-C.
 - Enable local tools with `--do` for files, commands, HTTP requests, web pages, and web search.
 - Run multi-round `model -> tool -> model` agent loops.
@@ -102,6 +103,7 @@ The configuration interface supports:
 - Manual model lists and model discovery
 - Per-provider context windows and timeouts
 - A nested AI call page for Thinking strength and budget, Temperature, Top P, maximum output tokens, streaming, and advanced request JSON
+- A Conversation entry page for Automatic, Always continue, and Always exit behavior, with a separately configurable Judge model
 - Provider-default sampling and Thinking values that omit unsupported overrides instead of forcing them on every model
 - Maximum tool-loop rounds
 - Automatic compaction ratio and system prompt
@@ -120,6 +122,18 @@ ask --provider deepseek --model deepseek-v4-flash "Hello"
 ```
 
 An environment variable value takes precedence over a key stored in the configuration file.
+
+### Conversation Entry
+
+`ask settings ➔ Conversation entry` controls what happens after the first answer in an interactive terminal:
+
+- `Automatic` sends the original question and completed answer to the configured Judge model. The Judge returns only `CONTINUE` or `EXIT`. Its request is non-streaming, has no tools, and is not added to conversation history.
+- `Always continue` preserves the traditional behavior and enters the REPL without calling the Judge.
+- `Always exit` saves the first exchange and exits without calling the Judge.
+
+If the Judge request fails, times out, or returns an invalid decision, `ask` safely enters the REPL and reports the failure on stderr. `--no-repl`, `--json`, piped/non-TTY use, and explicit `-i` do not call the Judge; `-i` always enters the REPL.
+
+After `Automatic` chooses exit or `Always exit` applies, running bare `ask` in the same working directory within 10 seconds restores that conversation, prints `resumed`, and opens the REPL. The quick-resume record is consumed once. A prompt, `resume`, `--config`, or any other explicit entry option starts its requested flow instead. Restored sessions retain their provider, model, message history, working directory, and `--do` mode.
 
 ## Command-Line Usage
 
@@ -182,7 +196,7 @@ Pressing Ctrl-C during generation cancels the current HTTP stream and returns to
 
 ## REPL
 
-When stdin and stdout are both terminals, `ask` enters the REPL after the first response. Regular input continues the conversation. The following commands are also available:
+When stdin and stdout are both terminals, the configured Conversation entry policy decides whether `ask` enters the REPL after the first response. Regular input continues the conversation. The following commands are also available:
 
 | Input | Behavior |
 |---|---|
