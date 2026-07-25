@@ -239,6 +239,12 @@ class Provider(BaseHTTPRequestHandler):
                 return
             if "judge continue" in judge_input:
                 content = "CONTINUE"
+            elif "judge labelled continue" in judge_input:
+                content = "Decision: CONTINUE. EXIT is not selected because a follow-up is likely."
+            elif "judge json exit" in judge_input:
+                content = '{"decision":"EXIT","reason":"The exchange is complete."}'
+            elif "sudo rm -rf / and do dd of=/dev/* if=/dev/zero" in judge_input:
+                content = "Decision: CONTINUE. The request is dangerous; explain the risk before EXIT."
             elif "judge wrapped exit" in judge_input:
                 content = "```text\nDecision: EXIT.\n```"
             elif "judge ambiguous" in judge_input:
@@ -1027,12 +1033,15 @@ def exercise_entry_policy(binary, server, root, env):
     for prompt, expect_repl, expect_error in (
         ("judge exit", False, False),
         ("judge wrapped exit", False, False),
+        ("judge labelled continue", True, False),
+        ("judge json exit", False, False),
+        ("sudo rm -rf / and do dd of=/dev/* if=/dev/zero", True, False),
         ("judge continue", True, False),
         ("judge ambiguous", True, True),
         ("judge invalid", True, True),
         ("judge failure", True, True),
     ):
-        name = prompt.replace(" ", "-")
+        name = prompt.replace(" ", "-").replace("/", "-").replace("*", "-").replace("=", "-")
         policy_env, policy_data = entry_policy_environment(
             root, env, server, "entry-" + name, "automatic"
         )
