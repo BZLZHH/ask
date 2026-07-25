@@ -1,6 +1,7 @@
 #include "ask/config.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdlib>
 #include <fstream>
@@ -40,6 +41,8 @@ Json::Value strings_to_json(const std::vector<std::string>& values) {
   return result;
 }
 
+ModelCapabilities inferred_capabilities(const Provider& provider, const std::string& model);
+
 void validate(Config& config) {
   if (config.providers.empty()) config = ConfigStore::defaults();
   std::set<std::string> ids;
@@ -65,6 +68,16 @@ void validate(Config& config) {
         std::find(provider.models.begin(), provider.models.end(), provider.default_model) ==
             provider.models.end()) {
       provider.models.insert(provider.models.begin(), provider.default_model);
+    }
+    for (auto iterator = provider.model_capabilities.begin();
+         iterator != provider.model_capabilities.end();) {
+      if (iterator->first.empty()) {
+        iterator = provider.model_capabilities.erase(iterator);
+      } else {
+        const auto fallback = inferred_capabilities(provider, iterator->first);
+        iterator->second = capabilities_from_json(capabilities_to_json(iterator->second), fallback);
+        ++iterator;
+      }
     }
   }
   if (config.settings.auto_compact_ratio <= 0.1 ||
@@ -120,6 +133,67 @@ void validate(Config& config) {
 }
 
 }  // namespace
+
+namespace {
+
+ModelCapabilities inferred_capabilities(const Provider& provider, const std::string& model) {
+  ModelCapabilities capabilities;
+  capabilities.context_window = provider.context_window;
+  if (provider.protocol == "anthropic") capabilities.json = false;
+
+  std::string lower = model;
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+  if (lower.find("embedding") != std::string::npos || lower.find("rerank") != std::string::npos) {
+    capabilities.tools = false;
+    capabilities.streaming = false;
+    capabilities.thinking = false;
+    capabilities.temperature = false;
+    capabilities.top_p = false;
+    capabilities.json = false;
+  }
+  if (lower.starts_with("o1") || lower.starts_with("o3") || lower.starts_with("o4") ||
+      lower.find("reasoner") != std::string::npos) {
+    capabilities.temperature = false;
+    capabilities.top_p = false;
+  }
+  return capabilities;
+}
+
+}  // namespace
+
+ModelCapabilities capabilities_for_model(const Provider& provider, const std::string& model) {
+  const auto found = provider.model_capabilities.find(model);
+  if (found != provider.model_capabilities.end()) return found->second;
+  return inferred_capabilities(provider, model);
+}
+
+Json::Value capabilities_to_json(const ModelCapabilities& capabilities) {
+  Json::Value value(Json::objectValue);
+  value["tools"] = capabilities.tools;
+  value["streaming"] = capabilities.streaming;
+  value["thinking"] = capabilities.thinking;
+  value["temperature"] = capabilities.temperature;
+  value["top_p"] = capabilities.top_p;
+  value["json"] = capabilities.json;
+  value["context_window"] = capabilities.context_window;
+  return value;
+}
+
+ModelCapabilities capabilities_from_json(const Json::Value& value,
+                                         const ModelCapabilities& fallback) {
+  ModelCapabilities capabilities = fallback;
+  if (!value.isObject()) return capabilities;
+  capabilities.tools = value.get("tools", capabilities.tools).asBool();
+  capabilities.streaming = value.get("streaming", capabilities.streaming).asBool();
+  capabilities.thinking = value.get("thinking", capabilities.thinking).asBool();
+  capabilities.temperature = value.get("temperature", capabilities.temperature).asBool();
+  capabilities.top_p = value.get("top_p", capabilities.top_p).asBool();
+  capabilities.json = value.get("json", capabilities.json).asBool();
+  capabilities.context_window = value.get("context_window", capabilities.context_window).asInt();
+  if (capabilities.context_window < 1024) capabilities.context_window = fallback.context_window;
+  return capabilities;
+}
 
 Provider* Config::find_provider(const std::string& id) {
   auto it = std::find_if(providers.begin(), providers.end(),
@@ -281,6 +355,11 @@ Json::Value config_to_json(const Config& config) {
     item["api_key_env"] = provider.api_key_env;
     item["models"] = strings_to_json(provider.models);
     item["default_model"] = provider.default_model;
+    Json::Value capabilities(Json::objectValue);
+    for (const auto& [model, value] : provider.model_capabilities) {
+      capabilities[model] = capabilities_to_json(value);
+    }
+    item["model_capabilities"] = capabilities;
     item["context_window"] = provider.context_window;
     item["timeout_seconds"] = provider.timeout_seconds;
     item["enabled"] = provider.enabled;
@@ -327,6 +406,13 @@ Config config_from_json(const Json::Value& root) {
     provider.models = strings_from_json(item["models"]);
     provider.default_model = item.get("default_model", "").asString();
     provider.context_window = item.get("context_window", 128000).asInt();
+    const auto& capabilities = item["model_capabilities"];
+    if (capabilities.isObject()) {
+      for (const auto& model : capabilities.getMemberNames()) {
+        provider.model_capabilities[model] = capabilities_from_json(
+            capabilities[model], inferred_capabilities(provider, model));
+      }
+    }
     provider.timeout_seconds = item.get("timeout_seconds", 120).asInt();
     provider.enabled = item.get("enabled", true).asBool();
     const auto& headers = item["headers"];

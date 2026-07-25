@@ -65,6 +65,9 @@ void test_config(const std::filesystem::path& root) {
   ollama->enabled = true;
   ollama->default_model = "qwen3:8b";
   ollama->headers["X-Test"] = "yes";
+  ollama->model_capabilities["qwen3:8b"] = {
+      .tools = false, .streaming = true, .thinking = false, .temperature = true,
+      .top_p = false, .json = false, .context_window = 8192};
   config.settings.temperature = 0.25;
   config.settings.top_p = 0.85;
   config.settings.reasoning_effort = "high";
@@ -80,6 +83,15 @@ void test_config(const std::filesystem::path& root) {
   expect(loaded.default_model == "qwen3:8b",
          "global default model follows the default provider");
   expect(loaded.find_provider("ollama")->headers.at("X-Test") == "yes", "headers round trip");
+  const auto loaded_capabilities = loaded.find_provider("ollama")->model_capabilities.at("qwen3:8b");
+  expect(!loaded_capabilities.tools && loaded_capabilities.streaming &&
+             !loaded_capabilities.thinking && !loaded_capabilities.top_p &&
+             !loaded_capabilities.json && loaded_capabilities.context_window == 8192,
+         "model capability registry round trips");
+  expect(ask::capabilities_for_model(*loaded.find_provider("ollama"), "qwen3:8b").context_window == 8192,
+         "registered model capabilities take precedence over provider defaults");
+  expect(!ask::capabilities_for_model(*loaded.find_provider("ollama"), "o3-mini").temperature,
+         "built-in model capability inference disables unsupported sampling");
   expect(loaded.settings.temperature && *loaded.settings.temperature == 0.25,
          "temperature round trips");
   expect(loaded.settings.top_p && *loaded.settings.top_p == 0.85, "top_p round trips");

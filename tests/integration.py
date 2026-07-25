@@ -1219,6 +1219,29 @@ def exercise_generation_settings(binary, server, root, env):
     assert requests[-1][1]["stream"] is True, requests[-1]
     assert requests[-1][1]["temperature"] == 0.2, requests[-1]
 
+    limited = protocol_config("openai", base + "/v1", "limited-model")
+    limited["providers"][0]["model_capabilities"] = {
+        "limited-model": {
+            "tools": False, "streaming": False, "thinking": False,
+            "temperature": False, "top_p": False, "json": False,
+            "context_window": 8192,
+        }
+    }
+    limited["settings"].update({
+        "temperature": 0.2, "top_p": 0.8, "reasoning_effort": "high",
+        "stream_output": True,
+        "custom_parameters": {"temperature": 0.9, "top_p": 0.1,
+                               "response_format": {"type": "json_object"}},
+    })
+    _, requests = run_protocol_call(
+        binary, server, root, env, "model-capabilities", limited, "limited capabilities"
+    )
+    body = requests[-1][1]
+    assert body["stream"] is False, body
+    assert "tools" not in body and "tool_choice" not in body, body
+    assert "temperature" not in body and "top_p" not in body, body
+    assert "reasoning_effort" not in body and "response_format" not in body, body
+
     openrouter = protocol_config("openai", base + "/v1", "router-model")
     openrouter["default_provider"] = "openrouter"
     openrouter["providers"][0].update({

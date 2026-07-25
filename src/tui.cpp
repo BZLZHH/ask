@@ -348,14 +348,82 @@ void normalize_models(Provider& provider, std::vector<std::string> models) {
   }
 }
 
-void model_actions(Config& config, std::size_t provider_index, std::size_t model_index) {
+void model_capabilities_page(Config& config, const Config& original, std::size_t provider_index,
+                             const std::string& model) {
+  static constexpr std::array<std::string_view, 8> labels = {
+      "Tool calls", "Streaming", "Thinking", "Temperature", "Top P", "JSON mode",
+      "Context window", "Reset model override"};
+  int selected = 0;
+  for (;;) {
+    auto& provider = config.providers[provider_index];
+    auto capabilities = capabilities_for_model(provider, model);
+    heading(settings_path({"Providers", provider.name, "Models", model, "Capabilities"}),
+            config_dirty(original, config));
+    mvaddnstr(2, 2, "Effective capabilities; explicit model entries override protocol defaults.",
+              std::max(0, COLS - 4));
+    for (int index = 0; index < static_cast<int>(labels.size()); ++index) {
+      std::string value;
+      bool opens = false;
+      switch (index) {
+        case 0: value = capabilities.tools ? "Supported" : "Unsupported"; break;
+        case 1: value = capabilities.streaming ? "Supported" : "Unsupported"; break;
+        case 2: value = capabilities.thinking ? "Supported" : "Unsupported"; break;
+        case 3: value = capabilities.temperature ? "Supported" : "Unsupported"; break;
+        case 4: value = capabilities.top_p ? "Supported" : "Unsupported"; break;
+        case 5: value = capabilities.json ? "Supported" : "Unsupported"; break;
+        case 6: value = std::to_string(capabilities.context_window) + " tokens"; opens = true; break;
+        case 7: value = provider.model_capabilities.contains(model) ? "Configured override" : "Protocol default";
+          opens = true;
+          break;
+      }
+      setting_row(4 + index, index == selected, std::string(labels[static_cast<std::size_t>(index)]),
+                  value, opens);
+    }
+    footer("Up/Down navigate  Left/Right toggle  Enter edit  Esc back");
+    refresh();
+    const int key = getch();
+    if (is_up(key) && selected > 0) --selected;
+    else if (is_down(key) && selected + 1 < static_cast<int>(labels.size())) ++selected;
+    else if (is_escape(key) || (is_left(key) && selected == 7)) return;
+    else if (is_left(key) || is_right(key) || is_enter(key)) {
+      if (selected < 6) {
+        auto& target = provider.model_capabilities[model];
+        target = capabilities;
+        const bool value = is_right(key) ? true : is_left(key) ? false :
+                           selected == 0 ? target.tools : selected == 1 ? target.streaming :
+                           selected == 2 ? target.thinking : selected == 3 ? target.temperature :
+                           selected == 4 ? target.top_p : target.json;
+        if (selected == 0) target.tools = value;
+        else if (selected == 1) target.streaming = value;
+        else if (selected == 2) target.thinking = value;
+        else if (selected == 3) target.temperature = value;
+        else if (selected == 4) target.top_p = value;
+        else if (selected == 5) target.json = value;
+      } else if (selected == 6 && is_enter(key)) {
+        auto value = edit_text(settings_path({"Providers", provider.name, "Models", model,
+                                               "Capabilities", "Context window"}),
+                               std::to_string(capabilities.context_window));
+        if (value) {
+          auto& target = provider.model_capabilities[model];
+          target = capabilities;
+          target.context_window = parse_int(*value, capabilities.context_window, 1024, 10000000);
+        }
+      } else if (selected == 7 && (is_enter(key) || is_right(key))) {
+        provider.model_capabilities.erase(model);
+      }
+    }
+  }
+}
+
+void model_actions(Config& config, const Config& original, std::size_t provider_index,
+                   std::size_t model_index) {
   for (;;) {
     auto& provider = config.providers[provider_index];
     if (model_index >= provider.models.size()) return;
     const auto model = provider.models[model_index];
     const std::vector<std::string> actions = {
         model == provider.default_model ? "Default model" : "Set as provider default",
-        "Rename model", "Remove model"};
+        "Capabilities", "Rename model", "Remove model"};
     auto choice = select_menu(settings_path({"Providers", provider.name, "Models", model}),
                               actions, 0,
                               "Provider: " + provider.name);
@@ -366,6 +434,10 @@ void model_actions(Config& config, std::size_t provider_index, std::size_t model
       return;
     }
     if (*choice == 1) {
+      model_capabilities_page(config, original, provider_index, model);
+      continue;
+    }
+    if (*choice == 2) {
       auto value = edit_text(
           settings_path({"Providers", provider.name, "Models", model, "Rename"}), model);
       if (!value || value->empty() || *value == model) continue;
@@ -375,17 +447,23 @@ void model_actions(Config& config, std::size_t provider_index, std::size_t model
         continue;
       }
       provider.models[model_index] = *value;
+      if (const auto found = provider.model_capabilities.find(model);
+          found != provider.model_capabilities.end()) {
+        provider.model_capabilities[*value] = found->second;
+        provider.model_capabilities.erase(found);
+      }
       if (provider.default_model == model) provider.default_model = *value;
       if (config.default_provider == provider.id && config.default_model == model) {
         config.default_model = *value;
       }
       return;
     }
-    if (*choice == 2 && confirm_dialog(
+    if (*choice == 3 && confirm_dialog(
                            settings_path({"Providers", provider.name, "Models", model, "Remove"}),
                            "Remove " + model + " from " + provider.name + "?",
                                        "Remove model")) {
       provider.models.erase(provider.models.begin() + static_cast<std::ptrdiff_t>(model_index));
+      provider.model_capabilities.erase(model);
       if (provider.default_model == model) {
         provider.default_model = provider.models.empty() ? std::string{} : provider.models.front();
       }
@@ -437,7 +515,7 @@ void models_page(Config& config, const Config& original, std::size_t provider_in
     else if (is_escape(key) || is_left(key)) return;
     else if (is_enter(key) || is_right(key)) {
       if (selected < model_count) {
-        model_actions(config, provider_index, static_cast<std::size_t>(selected));
+        model_actions(config, original, provider_index, static_cast<std::size_t>(selected));
       } else if (selected == add_index) {
         auto value = edit_text(settings_path({"Providers", provider.name, "Models", "Add"}), {});
         if (value && !value->empty()) {

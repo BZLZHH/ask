@@ -106,6 +106,7 @@ The configuration interface supports:
 - Manual model lists and model discovery
 - Per-provider context windows and timeouts
 - A nested AI call page for Thinking strength and budget, Temperature, Top P, maximum output tokens, streaming, and advanced request JSON
+- Per-model capability overrides for tool calls, streaming, Thinking, Temperature, Top P, JSON mode, and context window
 - A Conversation entry page for Automatic, Always continue, and Always exit behavior, with a separately configurable Judge model
 - Provider-default sampling and Thinking values that omit unsupported overrides instead of forcing them on every model
 - Maximum tool-loop rounds
@@ -114,6 +115,8 @@ The configuration interface supports:
 The `ask settings ➔ AI call` page uses the same navigation model as the rest of the TUI: Up/Down moves focus, Left/Right adjusts a value, Enter opens a selector or editor, and Esc returns to General. Temperature and Top P accept explicit values from `0.0` to `1.0`; choosing `Provider default` leaves the field out of the request. A Thinking budget of `0` means automatic budgeting from the selected strength.
 
 Thinking settings are translated for each protocol rather than copied verbatim. OpenAI-compatible providers receive `reasoning_effort`; OpenRouter receives its `reasoning` object; Anthropic receives `thinking.type` and `budget_tokens`; Gemini receives `generationConfig.thinkingConfig`. Anthropic Thinking removes conflicting Temperature and Top P values and requires its budget to remain below `max_tokens`. Provider and model support still varies, so `Provider default` is the safest compatibility setting.
+
+Each model has an effective capability profile. The built-in profile is inferred from the protocol and model name, while entries under a provider's `model_capabilities` object override it. Unsupported tools, streaming, Thinking, sampling, and JSON parameters are omitted even when advanced request JSON tries to add them. A model without streaming support automatically uses a complete request, and its registered context window controls automatic compaction.
 
 Advanced request JSON must be an object. It is recursively merged after the normal generation controls, so it can override ordinary provider-specific parameters. Request structure remains protected: it cannot replace `model`, messages or contents, system instructions, tools, tool choice, or the streaming flag. Protocol safety checks still run on the final Anthropic Thinking request.
 

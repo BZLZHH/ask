@@ -267,8 +267,9 @@ bool Conversation::maybe_compact(const std::string& pending, bool do_mode,
                                       : ToolExecutor::Access::read_only);
   const auto predicted = estimate_tokens(messages, system_prompt, schema) +
                          static_cast<std::size_t>(config_.settings.max_output_tokens);
+  const auto context_window = capabilities_for_model(provider(), options_.model).context_window;
   const auto threshold = static_cast<std::size_t>(
-      static_cast<double>(provider().context_window) * config_.settings.auto_compact_ratio);
+      static_cast<double>(context_window) * config_.settings.auto_compact_ratio);
   if (predicted >= threshold && !session_.messages.empty()) {
     if (!compact(true)) return false;
     messages = active_messages(session_);
@@ -276,7 +277,7 @@ bool Conversation::maybe_compact(const std::string& pending, bool do_mode,
   }
   const auto after = estimate_tokens(messages, system_prompt, schema) +
                      static_cast<std::size_t>(config_.settings.max_output_tokens);
-  if (after >= static_cast<std::size_t>(provider().context_window)) {
+  if (after >= static_cast<std::size_t>(context_window)) {
     std::cerr << "ask: input does not fit the configured context window even after compaction\n";
     return false;
   }

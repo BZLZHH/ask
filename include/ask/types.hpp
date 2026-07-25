@@ -10,6 +10,16 @@
 
 namespace ask {
 
+struct ModelCapabilities {
+  bool tools{true};
+  bool streaming{true};
+  bool thinking{true};
+  bool temperature{true};
+  bool top_p{true};
+  bool json{true};
+  int context_window{0};
+};
+
 struct Provider {
   std::string id;
   std::string name;
@@ -19,6 +29,7 @@ struct Provider {
   std::string api_key_env;
   std::vector<std::string> models;
   std::string default_model;
+  std::map<std::string, ModelCapabilities> model_capabilities;
   std::map<std::string, std::string> headers;
   int context_window{128000};
   int timeout_seconds{120};

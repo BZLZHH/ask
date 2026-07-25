@@ -367,21 +367,22 @@ void merge_custom_parameters(Json::Value& target, const Json::Value& custom, boo
 
 void apply_generation_settings(Json::Value& body, const Provider& provider,
                                const std::string& model, const Settings& settings,
-                               int max_output_tokens) {
+                               int max_output_tokens,
+                               const ModelCapabilities& capabilities) {
   const bool openai = provider.protocol == "openai" || provider.protocol == "openai_chat";
   const bool anthropic = provider.protocol == "anthropic";
   const bool gemini = provider.protocol == "gemini";
 
-  if (settings.temperature) {
+  if (capabilities.temperature && settings.temperature) {
     if (gemini) body["generationConfig"]["temperature"] = *settings.temperature;
     else body["temperature"] = *settings.temperature;
   }
-  if (settings.top_p) {
+  if (capabilities.top_p && settings.top_p) {
     if (gemini) body["generationConfig"]["topP"] = *settings.top_p;
     else body["top_p"] = *settings.top_p;
   }
 
-  if (openai && settings.reasoning_effort != "default") {
+  if (capabilities.thinking && openai && settings.reasoning_effort != "default") {
     if (provider.id == "openrouter") {
       if (settings.reasoning_effort == "off") {
         body["reasoning"]["enabled"] = false;
@@ -397,9 +398,9 @@ void apply_generation_settings(Json::Value& body, const Provider& provider,
                                             ? "none"
                                             : settings.reasoning_effort;
     }
-  } else if (anthropic && settings.reasoning_effort == "off") {
+  } else if (capabilities.thinking && anthropic && settings.reasoning_effort == "off") {
     body["thinking"]["type"] = "disabled";
-  } else if (anthropic && reasoning_enabled(settings)) {
+  } else if (capabilities.thinking && anthropic && reasoning_enabled(settings)) {
     const int budget = settings.thinking_budget_tokens > 0
                            ? settings.thinking_budget_tokens
                            : std::max(1024, calculated_thinking_budget(settings, max_output_tokens));
@@ -411,7 +412,7 @@ void apply_generation_settings(Json::Value& body, const Provider& provider,
     body.removeMember("top_p");
     body["thinking"]["type"] = "enabled";
     body["thinking"]["budget_tokens"] = budget;
-  } else if (gemini && settings.reasoning_effort != "default") {
+  } else if (capabilities.thinking && gemini && settings.reasoning_effort != "default") {
     auto& thinking = body["generationConfig"]["thinkingConfig"];
     thinking["includeThoughts"] = false;
     if (settings.reasoning_effort == "off") {
@@ -424,6 +425,25 @@ void apply_generation_settings(Json::Value& body, const Provider& provider,
   }
 
   merge_custom_parameters(body, settings.custom_parameters);
+
+  if (!capabilities.temperature) {
+    body.removeMember("temperature");
+    body["generationConfig"].removeMember("temperature");
+  }
+  if (!capabilities.top_p) {
+    body.removeMember("top_p");
+    body["generationConfig"].removeMember("topP");
+  }
+  if (!capabilities.thinking) {
+    body.removeMember("reasoning_effort");
+    body.removeMember("reasoning");
+    body.removeMember("thinking");
+    body["generationConfig"].removeMember("thinkingConfig");
+  }
+  if (!capabilities.json) {
+    body.removeMember("response_format");
+    body["generationConfig"].removeMember("responseMimeType");
+  }
 
   if (anthropic && body["thinking"].get("type", "").asString() == "enabled") {
     body.removeMember("temperature");
@@ -450,6 +470,7 @@ ChatResponse ChatClient::complete(const Provider& provider,
                                   int max_output_tokens_override) const {
   if (provider.base_url.empty()) throw std::runtime_error("provider base URL is empty");
   if (model.empty()) throw std::runtime_error("model is empty");
+  const auto capabilities = capabilities_for_model(provider, model);
   auto headers = common_headers(provider);
   auto key = ConfigStore::api_key_for(provider);
   Json::Value body(Json::objectValue);
@@ -467,11 +488,11 @@ ChatResponse ChatClient::complete(const Provider& provider,
     body["messages"] = wire_messages;
     body["stream"] = false;
     body["max_tokens"] = max_output_tokens;
-    if (tools.isArray() && !tools.empty()) {
+    if (capabilities.tools && tools.isArray() && !tools.empty()) {
       body["tools"] = tools;
       body["tool_choice"] = "auto";
     }
-    apply_generation_settings(body, provider, model, settings, max_output_tokens);
+    apply_generation_settings(body, provider, model, settings, max_output_tokens, capabilities);
     return parse_openai(parse_json(http_.request("POST", url, headers, json_string(body),
                                                     provider.timeout_seconds)));
   }
@@ -484,8 +505,8 @@ ChatResponse ChatClient::complete(const Provider& provider,
     body["system"] = system_prompt;
     body["messages"] = anthropic_messages(messages);
     body["max_tokens"] = max_output_tokens;
-    if (tools.isArray() && !tools.empty()) body["tools"] = anthropic_tools(tools);
-    apply_generation_settings(body, provider, model, settings, max_output_tokens);
+    if (capabilities.tools && tools.isArray() && !tools.empty()) body["tools"] = anthropic_tools(tools);
+    apply_generation_settings(body, provider, model, settings, max_output_tokens, capabilities);
     return parse_anthropic(parse_json(http_.request("POST", url, headers, json_string(body),
                                                       provider.timeout_seconds)));
   }
@@ -496,8 +517,8 @@ ChatResponse ChatClient::complete(const Provider& provider,
     body["contents"] = gemini_contents(messages);
     if (!system_prompt.empty()) body["systemInstruction"]["parts"][0]["text"] = system_prompt;
     body["generationConfig"]["maxOutputTokens"] = max_output_tokens;
-    if (tools.isArray() && !tools.empty()) body["tools"] = gemini_tools(tools);
-    apply_generation_settings(body, provider, model, settings, max_output_tokens);
+    if (capabilities.tools && tools.isArray() && !tools.empty()) body["tools"] = gemini_tools(tools);
+    apply_generation_settings(body, provider, model, settings, max_output_tokens, capabilities);
     return parse_gemini(parse_json(http_.request("POST", url, headers, json_string(body),
                                                    provider.timeout_seconds)));
   }
@@ -515,6 +536,13 @@ ChatResponse ChatClient::stream(const Provider& provider,
                                 const volatile std::sig_atomic_t* cancelled) const {
   if (provider.base_url.empty()) throw std::runtime_error("provider base URL is empty");
   if (model.empty()) throw std::runtime_error("model is empty");
+  const auto capabilities = capabilities_for_model(provider, model);
+  if (!capabilities.streaming) {
+    auto response = complete(provider, model, messages, system_prompt, settings, tools,
+                             max_output_tokens_override);
+    if (!response.content.empty()) on_text(response.content);
+    return response;
+  }
   auto headers = common_headers(provider);
   headers.erase(std::remove_if(headers.begin(), headers.end(), [](const std::string& header) {
                   std::string name = header.substr(0, header.find(':'));
@@ -541,11 +569,11 @@ ChatResponse ChatClient::stream(const Provider& provider,
     body["messages"] = wire_messages;
     body["stream"] = true;
     body["max_tokens"] = max_output_tokens;
-    if (tools.isArray() && !tools.empty()) {
+    if (capabilities.tools && tools.isArray() && !tools.empty()) {
       body["tools"] = tools;
       body["tool_choice"] = "auto";
     }
-    apply_generation_settings(body, provider, model, settings, max_output_tokens);
+    apply_generation_settings(body, provider, model, settings, max_output_tokens, capabilities);
 
     SseDecoder decoder([&](const std::string& data) {
       if (data == "[DONE]") return;
@@ -603,8 +631,8 @@ ChatResponse ChatClient::stream(const Provider& provider,
     body["messages"] = anthropic_messages(messages);
     body["max_tokens"] = max_output_tokens;
     body["stream"] = true;
-    if (tools.isArray() && !tools.empty()) body["tools"] = anthropic_tools(tools);
-    apply_generation_settings(body, provider, model, settings, max_output_tokens);
+    if (capabilities.tools && tools.isArray() && !tools.empty()) body["tools"] = anthropic_tools(tools);
+    apply_generation_settings(body, provider, model, settings, max_output_tokens, capabilities);
     std::map<unsigned, std::size_t> tool_blocks;
     SseDecoder decoder([&](const std::string& data) {
       const auto root = parse_json_text(data);
@@ -664,8 +692,8 @@ ChatResponse ChatClient::stream(const Provider& provider,
     body["contents"] = gemini_contents(messages);
     if (!system_prompt.empty()) body["systemInstruction"]["parts"][0]["text"] = system_prompt;
     body["generationConfig"]["maxOutputTokens"] = max_output_tokens;
-    if (tools.isArray() && !tools.empty()) body["tools"] = gemini_tools(tools);
-    apply_generation_settings(body, provider, model, settings, max_output_tokens);
+    if (capabilities.tools && tools.isArray() && !tools.empty()) body["tools"] = gemini_tools(tools);
+    apply_generation_settings(body, provider, model, settings, max_output_tokens, capabilities);
     SseDecoder decoder([&](const std::string& data) {
       const auto root = parse_json_text(data);
       response.raw = root;

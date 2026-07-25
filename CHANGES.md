@@ -7,6 +7,7 @@ This file records user-visible changes to `ask`.
 ### Added
 
 - Added native read-only `git_status`, `git_diff`, `git_log`, and `git_show` tools with structured branch, file, and conflict state.
+- Added a model capability registry with protocol defaults and per-model overrides for tools, streaming, Thinking, sampling, JSON mode, and context windows.
 
 ## 0.4.0 - 2026-07-25
 

@@ -26,5 +26,9 @@ class ConfigStore {
 
 Json::Value config_to_json(const Config& config);
 Config config_from_json(const Json::Value& root);
+ModelCapabilities capabilities_for_model(const Provider& provider, const std::string& model);
+Json::Value capabilities_to_json(const ModelCapabilities& capabilities);
+ModelCapabilities capabilities_from_json(const Json::Value& value,
+                                         const ModelCapabilities& fallback);
 
 }  // namespace ask
