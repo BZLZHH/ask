@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ask VERSION 0.2.0 LANGUAGES CXX)
+project(ask VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -39,7 +39,7 @@ add_executable(ask src/main.cpp)
 target_link_libraries(ask PRIVATE ask_core)
 
 install(TARGETS ask RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES README.md LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
+install(FILES README.md CHANGES.md LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
 include(CTest)
 if(BUILD_TESTING)

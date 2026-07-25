@@ -59,18 +59,79 @@ void test_config(const std::filesystem::path& root) {
   ask::ConfigStore store(path);
   auto config = ask::ConfigStore::defaults();
   config.default_provider = "ollama";
-  config.default_model = "qwen3:8b";
+  config.default_model = "stale-model";
   auto* ollama = config.find_provider("ollama");
   expect(ollama != nullptr, "default config includes Ollama");
   ollama->enabled = true;
+  ollama->default_model = "qwen3:8b";
   ollama->headers["X-Test"] = "yes";
+  config.settings.temperature = 0.25;
+  config.settings.top_p = 0.85;
+  config.settings.reasoning_effort = "high";
+  config.settings.thinking_budget_tokens = 2048;
+  config.settings.stream_output = false;
+  config.settings.custom_parameters["response_format"]["type"] = "json_object";
   store.save(config);
   auto loaded = store.load();
   expect(loaded.default_provider == "ollama", "config default provider round trips");
+  expect(loaded.default_model == "qwen3:8b",
+         "global default model follows the default provider");
   expect(loaded.find_provider("ollama")->headers.at("X-Test") == "yes", "headers round trip");
+  expect(loaded.settings.temperature && *loaded.settings.temperature == 0.25,
+         "temperature round trips");
+  expect(loaded.settings.top_p && *loaded.settings.top_p == 0.85, "top_p round trips");
+  expect(loaded.settings.reasoning_effort == "high", "reasoning effort round trips");
+  expect(loaded.settings.thinking_budget_tokens == 2048, "thinking budget round trips");
+  expect(!loaded.settings.stream_output, "stream output preference round trips");
+  expect(loaded.settings.custom_parameters["response_format"]["type"] == "json_object",
+         "custom request parameters round trip");
   struct stat info {};
   expect(::stat(path.c_str(), &info) == 0 && (info.st_mode & 0777) == 0600,
          "config is stored with mode 0600");
+
+  auto invalid = ask::config_to_json(ask::ConfigStore::defaults());
+  invalid["settings"]["temperature"] = -5.0;
+  invalid["settings"]["top_p"] = 9.0;
+  invalid["settings"]["reasoning_effort"] = "impossible";
+  invalid["settings"]["thinking_budget_tokens"] = -12;
+  invalid["settings"]["max_output_tokens"] = 2000000;
+  invalid["settings"]["custom_parameters"] = Json::Value(Json::arrayValue);
+  {
+    std::ofstream output(path);
+    output << invalid;
+  }
+  auto sanitized = store.load();
+  expect(sanitized.settings.temperature && *sanitized.settings.temperature == 0.0,
+         "temperature is clamped to its lower boundary");
+  expect(sanitized.settings.top_p && *sanitized.settings.top_p == 1.0,
+         "top_p is clamped to its upper boundary");
+  expect(sanitized.settings.reasoning_effort == "default",
+         "invalid reasoning effort falls back to provider default");
+  expect(sanitized.settings.thinking_budget_tokens == 0,
+         "negative thinking budget falls back to automatic");
+  expect(sanitized.settings.max_output_tokens == 1000000,
+         "maximum output tokens are clamped to the supported upper boundary");
+  expect(sanitized.settings.custom_parameters.isObject() &&
+             sanitized.settings.custom_parameters.empty(),
+         "non-object custom parameters fall back to an empty object");
+
+  auto legacy = ask::config_to_json(ask::ConfigStore::defaults());
+  legacy["settings"].removeMember("temperature");
+  legacy["settings"].removeMember("top_p");
+  legacy["settings"].removeMember("reasoning_effort");
+  legacy["settings"].removeMember("thinking_budget_tokens");
+  legacy["settings"].removeMember("stream_output");
+  legacy["settings"].removeMember("custom_parameters");
+  {
+    std::ofstream output(path);
+    output << legacy;
+  }
+  auto compatible = store.load();
+  expect(!compatible.settings.temperature && !compatible.settings.top_p,
+         "legacy configs keep provider sampling defaults");
+  expect(compatible.settings.reasoning_effort == "default" &&
+             compatible.settings.thinking_budget_tokens == 0 && compatible.settings.stream_output,
+         "legacy configs receive safe AI call defaults");
 }
 
 void test_sessions(const std::filesystem::path& root) {

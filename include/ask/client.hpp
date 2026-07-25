@@ -19,15 +19,17 @@ class ChatClient {
                         const std::string& model,
                         const std::vector<Message>& messages,
                         const std::string& system_prompt,
+                        const Settings& settings,
                         const Json::Value& tools = Json::Value(),
-                        int max_output_tokens = 4096) const;
+                        int max_output_tokens_override = 0) const;
 
   ChatResponse stream(const Provider& provider,
                       const std::string& model,
                       const std::vector<Message>& messages,
                       const std::string& system_prompt,
+                      const Settings& settings,
                       const Json::Value& tools,
-                      int max_output_tokens,
+                      int max_output_tokens_override,
                       const TextDelta& on_text,
                       const volatile std::sig_atomic_t* cancelled = nullptr) const;
 

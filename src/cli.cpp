@@ -138,7 +138,7 @@ Options:
       --no-stream      Wait for the complete response before printing
       --json           Emit the one-shot result as JSON
   -q, --quiet          Hide tool progress messages
-      --config         Open the provider configuration TUI
+      --config         Open the settings TUI
   -h, --help           Show this help
       --version        Show the version
 
@@ -201,13 +201,11 @@ int run_cli(const CliOptions& options) {
   if (!provider) throw std::runtime_error("unknown provider: " + run.provider);
   run.model = !options.model.empty() ? options.model
               : resumed && !session.model.empty() ? session.model
-              : run.provider == config.default_provider && !config.default_model.empty()
-                  ? config.default_model
-                  : provider->default_model;
+                                                  : provider->default_model;
   run.do_mode = options.do_mode || (resumed && session.do_mode);
   run.json_output = options.json;
   run.quiet = options.quiet;
-  run.stream_output = !options.no_stream && !options.json;
+  run.stream_output = config.settings.stream_output && !options.no_stream && !options.json;
   if (run.model.empty()) throw std::runtime_error("no model configured for provider " + run.provider);
 
   const bool stdin_tty = ::isatty(STDIN_FILENO);

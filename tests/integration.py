@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 import argparse
+import fcntl
 import json
 import os
 import pathlib
 import pty
 import select
 import signal
+import struct
 import subprocess
 import tempfile
+import termios
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -52,6 +55,8 @@ class Provider(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
         request = json.loads(self.rfile.read(length))
+        with self.server.requests_lock:
+            self.server.requests.append((self.path, request))
         if self.path == "/v1/messages":
             if request.get("stream"):
                 self.send_sse([
@@ -209,6 +214,7 @@ class Provider(BaseHTTPRequestHandler):
 class PtyProcess:
     def __init__(self, argv, cwd, env):
         self.master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
         self.process = subprocess.Popen(
             argv, cwd=cwd, env=env, stdin=slave, stdout=slave, stderr=slave,
             close_fds=True
@@ -291,10 +297,8 @@ def exercise_repl(binary, root, env):
         terminal.expect("ask> ")
 
         terminal.send(b"!config\n")
-        terminal.expect("ask provider configuration")
-        terminal.send(b"q")
-        terminal.expect("Discard configuration changes?")
-        terminal.send(b"y")
+        terminal.expect("ask settings")
+        terminal.send(b"\x1b")
         terminal.expect("ask> ")
 
         terminal.send(b"!do exhaust tools\n")
@@ -330,9 +334,61 @@ def exercise_repl(binary, root, env):
 
     configuration = PtyProcess([binary, "--config"], root, env)
     try:
-        configuration.expect("ask provider configuration")
-        configuration.send(b"s")
+        down = b"\x1bOB"
+        configuration.expect("ask settings")
+        configuration.send(b"\n")
+        configuration.expect("➔ Default model")
+        configuration.send(b"\x1b")
+        configuration.expect("Connections")
+        configuration.send(down * 5 + b"\n")
+        configuration.expect("➔ AI call")
+        configuration.expect("Thinking strength")
+        configuration.send(b"\x1bOC")
+        configuration.expect("Off")
+        configuration.send(down + b"\x1bOC")
+        configuration.expect("256 tokens")
+        configuration.send(down + b"\x1bOC")
+        configuration.expect("0.00")
+        configuration.send(down + b"\x1bOC")
+        configuration.expect("0.00")
+        configuration.send(down + b"\x1bOC")
+        configuration.expect("768")
+        configuration.send(down + b"\x1bOC")
+        configuration.expect("ff")
+        configuration.send(down + b"\n")
+        configuration.expect("➔ Advanced request JSON")
+        configuration.send(b"\x7f" * len('{"seed":7}') + b"[\n")
+        configuration.expect("must be a valid JSON object")
+        configuration.send(b"\x1b")
+        configuration.expect("Connections")
+        configuration.send(down + b"\n")
+        configuration.expect("➔ Providers")
+        configuration.send(b"\n")
+        configuration.expect("➔ Mock")
+        configuration.send(down * 7 + b"\n")
+        configuration.expect("Provider default: mock-model")
+        configuration.send(down + b"\n")
+        configuration.expect("Set as provider default")
+        configuration.send(b"\n")
+        configuration.expect("default: mock-model-2")
+        configuration.send(b"\x1b")
+        configuration.expect("Connection, authentication and model settings")
+        configuration.send(b"\x1b")
+        configuration.expect("Add provider")
+        configuration.send(b"\x1b")
+        configuration.expect("General")
+        configuration.send(down * 2 + b"\n")
         assert configuration.process.wait(timeout=5) == 0
+        saved = json.loads((pathlib.Path(env["ASK_CONFIG_HOME"]) / "config.json").read_text())
+        assert saved["default_model"] == "mock-model-2", saved
+        assert saved["providers"][0]["default_model"] == "mock-model-2", saved
+        assert saved["settings"]["reasoning_effort"] == "off", saved
+        assert saved["settings"]["thinking_budget_tokens"] == 256, saved
+        assert saved["settings"]["temperature"] == 0.0, saved
+        assert saved["settings"]["top_p"] == 0.0, saved
+        assert saved["settings"]["max_output_tokens"] == 768, saved
+        assert saved["settings"]["stream_output"] is False, saved
+        assert saved["settings"]["custom_parameters"] == {"seed": 7}, saved
     finally:
         if configuration.process.poll() is None:
             configuration.process.kill()
@@ -380,6 +436,152 @@ def protocol_config(protocol, base_url, model):
             "system_prompt": "Test assistant",
         },
     }
+
+
+def run_protocol_call(binary, server, root, env, name, config, *arguments):
+    config_home = root / (name + "-config")
+    config_home.mkdir()
+    (config_home / "config.json").write_text(json.dumps(config))
+    call_env = env.copy()
+    call_env["ASK_CONFIG_HOME"] = str(config_home)
+    call_env["ASK_DATA_HOME"] = str(root / (name + "-data"))
+    with server.requests_lock:
+        before = len(server.requests)
+    result = subprocess.run(
+        [binary, "--no-repl", *arguments], cwd=root, env=call_env,
+        stdin=subprocess.DEVNULL, text=True, capture_output=True, check=True
+    )
+    with server.requests_lock:
+        received = server.requests[before:]
+    assert received, (name, result)
+    return result, received
+
+
+def exercise_generation_settings(binary, server, root, env):
+    base = f"http://127.0.0.1:{server.server_port}"
+
+    openai = protocol_config("openai", base + "/v1", "mock-model")
+    openai["settings"].update({
+        "temperature": 0.2,
+        "top_p": 0.8,
+        "reasoning_effort": "auto",
+        "thinking_budget_tokens": 0,
+        "stream_output": True,
+        "custom_parameters": {
+            "temperature": 0.35,
+            "response_format": {"type": "json_object"},
+            "model": "blocked-model",
+            "messages": [{"role": "user", "content": "blocked"}],
+            "contents": [{"role": "user", "parts": [{"text": "blocked"}]}],
+            "system": "blocked system",
+            "systemInstruction": {"parts": [{"text": "blocked"}]},
+            "tools": [{"blocked": True}],
+            "tool_choice": "required",
+            "stream": True,
+        },
+    })
+    _, requests = run_protocol_call(
+        binary, server, root, env, "openai-generation", openai,
+        "--no-stream", "openai settings"
+    )
+    path, body = requests[-1]
+    assert path == "/v1/chat/completions", (path, body)
+    assert body["stream"] is False and body["model"] == "mock-model", body
+    assert body["messages"][-1]["content"] == "openai settings", body
+    assert body["messages"][0]["content"] == "Test assistant", body
+    for protected in ("contents", "system", "systemInstruction", "tools", "tool_choice"):
+        assert protected not in body, (protected, body)
+    assert body["temperature"] == 0.35 and body["top_p"] == 0.8, body
+    assert body["reasoning_effort"] == "medium", body
+    assert body["response_format"] == {"type": "json_object"}, body
+
+    openai["settings"]["custom_parameters"] = {}
+    _, requests = run_protocol_call(
+        binary, server, root, env, "openai-stream", openai, "openai stream"
+    )
+    assert requests[-1][1]["stream"] is True, requests[-1]
+    assert requests[-1][1]["temperature"] == 0.2, requests[-1]
+
+    openrouter = protocol_config("openai", base + "/v1", "router-model")
+    openrouter["default_provider"] = "openrouter"
+    openrouter["providers"][0].update({
+        "id": "openrouter", "name": "OpenRouter", "protocol": "openai"
+    })
+    openrouter["settings"].update({
+        "reasoning_effort": "high", "stream_output": False,
+        "custom_parameters": {},
+    })
+    _, requests = run_protocol_call(
+        binary, server, root, env, "openrouter-generation", openrouter, "router settings"
+    )
+    body = requests[-1][1]
+    assert body["stream"] is False, body
+    assert body["reasoning"] == {"effort": "high"}, body
+    assert "reasoning_effort" not in body, body
+
+    anthropic = protocol_config("anthropic", base, "claude-mock")
+    anthropic["settings"].update({
+        "max_output_tokens": 4096,
+        "temperature": 0.3,
+        "top_p": 0.7,
+        "reasoning_effort": "high",
+        "thinking_budget_tokens": 1200,
+        "stream_output": False,
+        "custom_parameters": {
+            "temperature": 0.95, "top_p": 0.1, "max_tokens": 1300,
+        },
+    })
+    _, requests = run_protocol_call(
+        binary, server, root, env, "anthropic-generation", anthropic, "anthropic settings"
+    )
+    body = requests[-1][1]
+    assert body["thinking"] == {"type": "enabled", "budget_tokens": 1200}, body
+    assert "temperature" not in body and "top_p" not in body, body
+    assert body["max_tokens"] == 1300, body
+
+    anthropic["settings"]["stream_output"] = True
+    anthropic["settings"]["custom_parameters"] = {}
+    _, requests = run_protocol_call(
+        binary, server, root, env, "anthropic-stream-generation",
+        anthropic, "anthropic stream settings"
+    )
+    body = requests[-1][1]
+    assert body["stream"] is True, body
+    assert body["thinking"] == {"type": "enabled", "budget_tokens": 1200}, body
+    assert "temperature" not in body and "top_p" not in body, body
+
+    gemini = protocol_config("gemini", base + "/v1beta", "gemini-2.5-flash")
+    gemini["settings"].update({
+        "max_output_tokens": 2048,
+        "temperature": 0.4,
+        "top_p": 0.9,
+        "reasoning_effort": "auto",
+        "thinking_budget_tokens": 0,
+        "stream_output": True,
+        "custom_parameters": {},
+    })
+    _, requests = run_protocol_call(
+        binary, server, root, env, "gemini-generation", gemini, "gemini settings"
+    )
+    path, body = requests[-1]
+    assert path.endswith(":streamGenerateContent?alt=sse"), path
+    generation = body["generationConfig"]
+    assert generation["maxOutputTokens"] == 2048, generation
+    assert generation["temperature"] == 0.4 and generation["topP"] == 0.9, generation
+    assert generation["thinkingConfig"] == {
+        "includeThoughts": False, "thinkingBudget": -1
+    }, generation
+
+    gemini["settings"]["stream_output"] = False
+    _, requests = run_protocol_call(
+        binary, server, root, env, "gemini-complete-generation",
+        gemini, "gemini complete settings"
+    )
+    path, body = requests[-1]
+    assert path.endswith(":generateContent"), path
+    generation = body["generationConfig"]
+    assert generation["temperature"] == 0.4 and generation["topP"] == 0.9, generation
+    assert generation["thinkingConfig"]["thinkingBudget"] == -1, generation
 
 
 def exercise_protocols_and_auto_compact(binary, server, root, env):
@@ -431,6 +633,8 @@ def exercise_protocols_and_auto_compact(binary, server, root, env):
 
 def run(binary):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
+    server.requests = []
+    server.requests_lock = threading.Lock()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -442,7 +646,7 @@ def run(binary):
             config = {
                 "version": 1,
                 "default_provider": "mock",
-                "default_model": "mock-model",
+                "default_model": "stale-top-level-model",
                 "providers": [{
                     "id": "mock",
                     "name": "Mock",
@@ -450,7 +654,7 @@ def run(binary):
                     "base_url": f"http://127.0.0.1:{server.server_port}/v1",
                     "api_key": "",
                     "api_key_env": "",
-                    "models": ["mock-model"],
+                    "models": ["mock-model", "mock-model-2"],
                     "default_model": "mock-model",
                     "headers": {},
                     "context_window": 8192,
@@ -461,6 +665,7 @@ def run(binary):
                     "auto_compact_ratio": 0.7,
                     "max_tool_rounds": 4,
                     "max_output_tokens": 512,
+                    "custom_parameters": {"seed": 7},
                     "save_sessions": True,
                     "system_prompt": "Test assistant",
                 },
@@ -488,13 +693,19 @@ def run(binary):
             )
             assert piped.stdout == "echo: prefix\n\npipe body\n", piped.stdout
 
+            with server.requests_lock:
+                before_json = len(server.requests)
             structured = subprocess.run(
                 [binary, "--no-repl", "--json", "json test"], cwd=root, env=env,
                 stdin=subprocess.DEVNULL, text=True, capture_output=True, check=True
             )
             payload = json.loads(structured.stdout)
             assert payload["text"] == "echo: json test"
+            assert payload["model"] == "mock-model", payload
             assert payload["usage"]["total_tokens"] == 12
+            with server.requests_lock:
+                json_requests = server.requests[before_json:]
+            assert json_requests and json_requests[-1][1]["stream"] is False, json_requests
 
             agent = subprocess.run(
                 [binary, "--no-repl", "--do", "make a file"], cwd=root, env=env,
@@ -505,6 +716,7 @@ def run(binary):
             assert (data_home / "sessions.db").exists()
             exercise_repl(binary, root, env)
             exercise_protocols_and_auto_compact(binary, server, root, env)
+            exercise_generation_settings(binary, server, root, env)
     finally:
         server.shutdown()
         server.server_close()

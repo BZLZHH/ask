@@ -3,7 +3,7 @@
 A Unix and Unix-like command-line client for quick AI questions, persistent conversations, and explicitly authorized local automation.
 
 
-Current version: `0.2.0`
+Current version: `0.3.0`
 
 ## Features
 
@@ -89,21 +89,34 @@ ask --config
 
 The configuration interface supports:
 
-- Provider creation, editing, deletion, enablement, and default selection
+- A General Settings home page for session behavior, the default model, AI calls, and providers
+- Breadcrumb headings that preserve the full Settings / Provider / Model hierarchy
+- Nested Providers and Models pages for connection-specific configuration
+- Arrow-key navigation, Enter to open or select, and Esc to return
+- Transactional editing with explicit Save changes and Cancel actions
+- Provider creation, field-by-field editing, deletion, enablement, and model discovery
 - OpenAI-compatible, Anthropic, and Gemini protocols
 - API base URLs
 - API keys stored directly or read from environment variables
 - Additional HTTP headers
 - Manual model lists and model discovery
 - Per-provider context windows and timeouts
-- Maximum output tokens and tool-loop rounds
+- A nested AI call page for Thinking strength and budget, Temperature, Top P, maximum output tokens, streaming, and advanced request JSON
+- Provider-default sampling and Thinking values that omit unsupported overrides instead of forcing them on every model
+- Maximum tool-loop rounds
 - Automatic compaction ratio and system prompt
+
+The `ask settings ➔ AI call` page uses the same navigation model as the rest of the TUI: Up/Down moves focus, Left/Right adjusts a value, Enter opens a selector or editor, and Esc returns to General. Temperature and Top P accept explicit values from `0.0` to `1.0`; choosing `Provider default` leaves the field out of the request. A Thinking budget of `0` means automatic budgeting from the selected strength.
+
+Thinking settings are translated for each protocol rather than copied verbatim. OpenAI-compatible providers receive `reasoning_effort`; OpenRouter receives its `reasoning` object; Anthropic receives `thinking.type` and `budget_tokens`; Gemini receives `generationConfig.thinkingConfig`. Anthropic Thinking removes conflicting Temperature and Top P values and requires its budget to remain below `max_tokens`. Provider and model support still varies, so `Provider default` is the safest compatibility setting.
+
+Advanced request JSON must be an object. It is recursively merged after the normal generation controls, so it can override ordinary provider-specific parameters. Request structure remains protected: it cannot replace `model`, messages or contents, system instructions, tools, tool choice, or the streaming flag. Protocol safety checks still run on the final Anthropic Thinking request.
 
 Environment variables are recommended for API keys. For example, the built-in DeepSeek provider reads `DEEPSEEK_API_KEY`:
 
 ```sh
 export DEEPSEEK_API_KEY='your-api-key'
-ask --provider deepseek --model deepseek-chat "Hello"
+ask --provider deepseek --model deepseek-v4-flash "Hello"
 ```
 
 An environment variable value takes precedence over a key stored in the configuration file.
@@ -126,7 +139,7 @@ Options:
       --no-stream      Wait for the complete response before printing
       --json           Emit one JSON object and disable streaming
   -q, --quiet          Hide tool progress messages
-      --config         Open the provider configuration TUI
+      --config         Open the settings TUI
   -h, --help           Show help
       --version        Show the version
 ```
@@ -138,7 +151,7 @@ Examples:
 ask "Explain edge-triggered epoll"
 
 # Override the provider and model for this session
-ask --provider deepseek --model deepseek-chat "Review this SQL query"
+ask --provider deepseek --model deepseek-v4-flash "Review this SQL query"
 
 # Allow the model to use tools inside the current directory
 ask --do "Inspect this project and fix its build"
@@ -153,19 +166,19 @@ ask --no-repl --no-stream "Reply with only yes or no"
 
 ## Streaming
 
-Responses stream to stdout by default. OpenAI-compatible SSE deltas, Anthropic content blocks, and Gemini `streamGenerateContent` events are decoded incrementally. Tool names and JSON arguments are assembled internally and are not printed as protocol data. Later model turns in a do-mode tool loop continue streaming normally.
+Responses stream to stdout by default when `Stream output` is enabled under `ask settings ➔ AI call`. OpenAI-compatible SSE deltas, Anthropic content blocks, and Gemini `streamGenerateContent` events are decoded incrementally. Tool names and JSON arguments are assembled internally and are not printed as protocol data. Later model turns in a do-mode tool loop continue streaming normally.
 
 ```sh
 ask "Write a four-line poem"
 ```
 
-Use `--no-stream` to wait for the complete response:
+Use `--no-stream` to wait for the complete response regardless of the saved setting:
 
 ```sh
 ask --no-stream "Summarize this error"
 ```
 
-Pressing Ctrl-C during generation cancels the current HTTP stream and returns to the REPL without exiting the conversation. `--json` automatically disables streaming so stdout remains one complete, valid JSON object.
+Pressing Ctrl-C during generation cancels the current HTTP stream and returns to the REPL without exiting the conversation. Both `--no-stream` and `--json` override the saved streaming preference; `--json` always disables streaming so stdout remains one complete, valid JSON object.
 
 ## REPL
 
@@ -217,7 +230,7 @@ JSON output has this shape:
 {
   "session": "20260719-120000-abcdef",
   "provider": "deepseek",
-  "model": "deepseek-chat",
+  "model": "deepseek-v4-flash",
   "text": "...",
   "finish_reason": "stop",
   "usage": {
@@ -290,7 +303,7 @@ Directories are created with mode `0700`. Configuration, database, and history f
 ctest --test-dir build --output-on-failure
 ```
 
-The test suite covers configuration and session persistence, CLI parsing, path traversal, Bubblewrap isolation, approval boundaries, private-network rejection, OpenAI/Anthropic/Gemini streaming, fragmented tool calls, JSON and pipeline behavior, Ctrl-C cancellation, and config/model/resume TUI flows in a PTY.
+The test suite covers configuration and session persistence, AI call validation and protocol request mapping, CLI parsing, path traversal, Bubblewrap isolation, approval boundaries, private-network rejection, OpenAI/Anthropic/Gemini streaming, fragmented tool calls, JSON and pipeline behavior, Ctrl-C cancellation, and fixed-size settings/model/resume TUI flows in a PTY.
 
 ## License
 

@@ -52,8 +52,19 @@ void validate(Config& config) {
     if (provider.protocol.empty()) provider.protocol = "openai";
     if (provider.context_window < 1024) provider.context_window = 128000;
     if (provider.timeout_seconds < 1) provider.timeout_seconds = 120;
+    std::vector<std::string> models;
+    std::set<std::string> model_ids;
+    for (const auto& model : provider.models) {
+      if (!model.empty() && model_ids.insert(model).second) models.push_back(model);
+    }
+    provider.models = std::move(models);
     if (provider.default_model.empty() && !provider.models.empty()) {
       provider.default_model = provider.models.front();
+    }
+    if (!provider.default_model.empty() &&
+        std::find(provider.models.begin(), provider.models.end(), provider.default_model) ==
+            provider.models.end()) {
+      provider.models.insert(provider.models.begin(), provider.default_model);
     }
   }
   if (config.settings.auto_compact_ratio <= 0.1 ||
@@ -61,12 +72,36 @@ void validate(Config& config) {
     config.settings.auto_compact_ratio = 0.70;
   }
   config.settings.max_tool_rounds = std::clamp(config.settings.max_tool_rounds, 1, 50);
-  config.settings.max_output_tokens = std::max(config.settings.max_output_tokens, 256);
-  if (!config.find_provider(config.default_provider)) {
-    config.default_provider = config.providers.front().id;
+  config.settings.max_output_tokens =
+      std::clamp(config.settings.max_output_tokens, 256, 1000000);
+  if (config.settings.temperature) {
+    config.settings.temperature = std::clamp(*config.settings.temperature, 0.0, 1.0);
+  }
+  if (config.settings.top_p) {
+    config.settings.top_p = std::clamp(*config.settings.top_p, 0.0, 1.0);
+  }
+  static const std::set<std::string> reasoning_efforts = {
+      "default", "off", "auto", "minimal", "low", "medium", "high", "xhigh"};
+  if (!reasoning_efforts.contains(config.settings.reasoning_effort)) {
+    config.settings.reasoning_effort = "default";
+  }
+  config.settings.thinking_budget_tokens =
+      std::clamp(config.settings.thinking_budget_tokens, 0, 1000000);
+  if (!config.settings.custom_parameters.isObject()) {
+    config.settings.custom_parameters = Json::Value(Json::objectValue);
+  }
+  const auto enabled = std::find_if(config.providers.begin(), config.providers.end(),
+                                    [](const Provider& provider) { return provider.enabled; });
+  const auto* configured_default = config.find_provider(config.default_provider);
+  if (!configured_default || !configured_default->enabled) {
+    if (enabled != config.providers.end()) config.default_provider = enabled->id;
+    else {
+      config.providers.front().enabled = true;
+      config.default_provider = config.providers.front().id;
+    }
   }
   const auto* selected = config.find_provider(config.default_provider);
-  if (config.default_model.empty() && selected) config.default_model = selected->default_model;
+  config.default_model = selected ? selected->default_model : std::string{};
 }
 
 }  // namespace
@@ -118,8 +153,8 @@ Config ConfigStore::defaults() {
        .protocol = "openai",
        .base_url = "https://api.deepseek.com/v1",
        .api_key_env = "DEEPSEEK_API_KEY",
-       .models = {"deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash"},
-       .default_model = "deepseek-chat",
+       .models = {"deepseek-v4-flash", "deepseek-v4-pro"},
+       .default_model = "deepseek-v4-flash",
        .context_window = 64000,
        .enabled = false},
       {.id = "openrouter",
@@ -242,6 +277,14 @@ Json::Value config_to_json(const Config& config) {
   settings["auto_compact_ratio"] = config.settings.auto_compact_ratio;
   settings["max_tool_rounds"] = config.settings.max_tool_rounds;
   settings["max_output_tokens"] = config.settings.max_output_tokens;
+  if (config.settings.temperature) settings["temperature"] = *config.settings.temperature;
+  else settings["temperature"] = Json::nullValue;
+  if (config.settings.top_p) settings["top_p"] = *config.settings.top_p;
+  else settings["top_p"] = Json::nullValue;
+  settings["reasoning_effort"] = config.settings.reasoning_effort;
+  settings["thinking_budget_tokens"] = config.settings.thinking_budget_tokens;
+  settings["stream_output"] = config.settings.stream_output;
+  settings["custom_parameters"] = config.settings.custom_parameters;
   settings["save_sessions"] = config.settings.save_sessions;
   settings["system_prompt"] = config.settings.system_prompt;
   root["settings"] = settings;
@@ -274,6 +317,16 @@ Config config_from_json(const Json::Value& root) {
   config.settings.auto_compact_ratio = settings.get("auto_compact_ratio", 0.70).asDouble();
   config.settings.max_tool_rounds = settings.get("max_tool_rounds", 12).asInt();
   config.settings.max_output_tokens = settings.get("max_output_tokens", 4096).asInt();
+  if (settings["temperature"].isNumeric()) {
+    config.settings.temperature = settings["temperature"].asDouble();
+  }
+  if (settings["top_p"].isNumeric()) config.settings.top_p = settings["top_p"].asDouble();
+  config.settings.reasoning_effort = settings.get("reasoning_effort", "default").asString();
+  config.settings.thinking_budget_tokens = settings.get("thinking_budget_tokens", 0).asInt();
+  config.settings.stream_output = settings.get("stream_output", true).asBool();
+  if (settings["custom_parameters"].isObject()) {
+    config.settings.custom_parameters = settings["custom_parameters"];
+  }
   config.settings.save_sessions = settings.get("save_sessions", true).asBool();
   config.settings.system_prompt = settings.get("system_prompt", "").asString();
   return config;

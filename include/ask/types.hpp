@@ -29,6 +29,12 @@ struct Settings {
   double auto_compact_ratio{0.70};
   int max_tool_rounds{12};
   int max_output_tokens{4096};
+  std::optional<double> temperature;
+  std::optional<double> top_p;
+  std::string reasoning_effort{"default"};
+  int thinking_budget_tokens{0};
+  bool stream_output{true};
+  Json::Value custom_parameters{Json::objectValue};
   bool save_sessions{true};
   std::string system_prompt;
 };
