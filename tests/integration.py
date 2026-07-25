@@ -519,6 +519,7 @@ def assert_judge_request(request, original_prompt):
     assert body["messages"][0]["content"].startswith(
         "You classify whether a terminal user"
     ), body
+    assert "Output plain text only: no Markdown" in body["messages"][0]["content"], body
     assert body["messages"][1]["role"] == "user", body
     assert original_prompt in body["messages"][1]["content"], body
     assert "echo: " + original_prompt in body["messages"][1]["content"], body
