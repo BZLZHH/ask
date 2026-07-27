@@ -66,7 +66,7 @@ void attach_tty_to_stdin() {
 bool bare_invocation(const CliOptions& options) {
   return !options.help && !options.version && !options.config && !options.do_mode &&
          !options.interactive && !options.no_repl && !options.no_stream && !options.json &&
-         !options.quiet && !options.resume && options.provider.empty() &&
+         !options.quiet && !options.resume && !options.conference && options.provider.empty() &&
          options.model.empty() && options.prompt.empty();
 }
 
@@ -247,17 +247,28 @@ CliOptions parse_cli(int argc, char** argv) {
       positional.push_back(argument);
     }
   }
-  if (!positional.empty() && positional.front() == "resume" && !literal) {
+  if (!positional.empty() && positional.front() == "conference" && !literal) {
+    options.conference = true;
+    if (positional.size() >= 2 && positional[1] == "resume") {
+      options.conference_resume = true;
+      if (positional.size() > 3) throw std::invalid_argument("conference resume accepts at most one id");
+      if (positional.size() == 3) options.conference_id = positional[2];
+    } else {
+      std::vector<std::string> goal(positional.begin() + 1, positional.end());
+      options.prompt = join(goal);
+    }
+  } else if (!positional.empty() && positional.front() == "resume" && !literal) {
     options.resume = true;
     if (positional.size() > 2) throw std::invalid_argument("resume accepts at most one session id");
     if (positional.size() == 2) options.resume_id = positional[1];
   } else {
     options.prompt = join(positional);
   }
-  const int entry_points = (options.config ? 1 : 0) + (options.resume ? 1 : 0);
+  const int entry_points = (options.config ? 1 : 0) + (options.resume ? 1 : 0) +
+                           (options.conference ? 1 : 0);
   if (entry_points > 1 || (options.config && (!options.prompt.empty() || options.do_mode)) ||
-      (options.resume && !options.prompt.empty())) {
-    throw std::invalid_argument("--config, resume and a new prompt are mutually exclusive");
+      (options.resume && !options.prompt.empty()) || (options.conference && options.do_mode)) {
+    throw std::invalid_argument("--config, resume, conference and a new prompt are mutually exclusive");
   }
   if (options.interactive && options.no_repl) {
     throw std::invalid_argument("--interactive and --no-repl are mutually exclusive");
@@ -271,6 +282,8 @@ std::string usage() {
   ask --do [options] [prompt ...]
   ask --config
   ask resume [session-id] [--provider ID] [--model MODEL]
+  ask conference [goal] [--provider ID] [--model MODEL]
+  ask conference resume [conference-id]
 
 Options:
   -p, --provider ID    Override the configured provider for this session
@@ -289,6 +302,7 @@ Ask mode has read-only workspace and allowlisted system-status tools.
 The model may request do access interactively; non-TTY permission requests are denied.
 Piped stdin is combined after an explicit prompt. Non-TTY use is one-shot by default.
 A bare ask resumes an automatically exited conversation for up to 10 seconds.
+Conference opens the keyboard-first multi-AI meeting TUI.
 )USAGE";
 }
 
@@ -312,6 +326,35 @@ int run_cli(const CliOptions& options) {
       throw std::runtime_error("--config requires a terminal");
     }
     Tui::configure(config_store, &client);
+    return 0;
+  }
+  if (options.conference) {
+    if (!stdin_tty || !stdout_tty) {
+      throw std::runtime_error("conference requires a terminal");
+    }
+    ConferenceStore conferences;
+    Conference conference;
+    if (options.conference_resume) {
+      std::string id = options.conference_id;
+      if (id.empty()) {
+        auto selected = Tui::choose_conference(conferences);
+        if (!selected) return 0;
+        id = *selected;
+      }
+      auto loaded = conferences.load(id);
+      if (!loaded) throw std::runtime_error("conference not found: " + id);
+      conference = std::move(*loaded);
+    } else {
+      if (options.prompt.empty()) {
+        throw std::runtime_error("conference requires a goal, or use conference resume");
+      }
+      conference = ConferenceEngine::create(config, options.prompt, std::filesystem::current_path(),
+                                            options.provider, options.model);
+      conferences.save(conference);
+    }
+    ConferenceEngine engine(config, std::move(conference), conferences);
+    if (!options.conference_resume) engine.prepare_setup();
+    Tui::run_conference(engine);
     return 0;
   }
 

@@ -6,6 +6,7 @@
 #include "ask/client.hpp"
 #include "ask/config.hpp"
 #include "ask/session.hpp"
+#include "ask/conference.hpp"
 
 namespace ask {
 
@@ -16,6 +17,8 @@ class Tui {
   static bool configure(ConfigStore& store, ChatClient* client = nullptr);
   static std::optional<std::string> choose_session(SessionStore& store);
   static bool choose_model(const Config& config, std::string& provider, std::string& model);
+  static std::optional<std::string> choose_conference(ConferenceStore& store);
+  static void run_conference(ConferenceEngine& engine);
   static DoModeApproval approve_do_mode(const std::string& reason,
                                         const std::string& operation,
                                         const std::string& suggested_scope);

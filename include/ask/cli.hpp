@@ -17,6 +17,9 @@ struct CliOptions {
   bool json{false};
   bool quiet{false};
   bool resume{false};
+  bool conference{false};
+  bool conference_resume{false};
+  std::string conference_id;
   std::string resume_id;
   std::string provider;
   std::string model;
