@@ -257,7 +257,7 @@ conferenceEND ：
 ```
 
  。 goal、Status、Rounds、 facts、Open questions、decisions and action items。
- Participant seats and responsibilities、 agenda Status and Phase conclusion、Userquestion and ， and complete advisor 。 `FACT:` or `DECISION:` ， ； 。
+ Moderatorcomplete finalconclusion（ ）， Participant seats and responsibilities、 agenda Status and Phase conclusion、Userquestion and ， and complete advisor 。 using line ， 、PageUp/PageDown、Home/End ， line words 。 `FACT:` or `DECISION:` ， ； 。
 
  Markdown ：
 

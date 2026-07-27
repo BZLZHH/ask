@@ -227,6 +227,60 @@ std::optional<std::string> edit_text(const std::string& title, const std::string
  }
 }
 
+std::vector<std::string> wrapped_view_lines(const std::string& text, int width) {
+ std::vector<std::string> result;
+ width = std::max(1, width);
+ std::istringstream input(text);
+ std::string line;
+ while (std::getline(input, line)) {
+ if (!line.empty() && line.back() == '\r') line.pop_back();
+ if (line.empty()) {
+ result.push_back({});
+ continue;
+ }
+ for (std::size_t begin = 0; begin < line.size();) {
+ std::size_t end = std::min(line.size(), begin + static_cast<std::size_t>(width));
+ while (end > begin && end < line.size() &&
+ (static_cast<unsigned char>(line[end]) & 0xc0) == 0x80) --end;
+ if (end == begin) end = std::min(line.size(), begin + static_cast<std::size_t>(width));
+ result.push_back(line.substr(begin, end - begin));
+ begin = end;
+ }
+ }
+ if (result.empty()) result.push_back({});
+ return result;
+}
+
+void view_text(const std::string& title, const std::string& text) {
+ int offset = 0;
+ for (;;) {
+ const int width = std::max(1, COLS - 4);
+ const int first_row = 3;
+ const int visible_rows = std::max(1, LINES - first_row - 2);
+ const auto lines = wrapped_view_lines(text, width);
+ offset = std::clamp(offset, 0, std::max(0, static_cast<int>(lines.size()) - visible_rows));
+ erase();
+ attron(COLOR_PAIR(1) | A_BOLD);
+ mvaddnstr(0, 2, title.c_str(), width);
+ attroff(COLOR_PAIR(1) | A_BOLD);
+ mvhline(1, 0, ACS_HLINE, COLS);
+ for (int row = 0; row < visible_rows && offset + row < static_cast<int>(lines.size()); ++row) {
+ mvaddnstr(first_row + row, 2, lines[static_cast<std::size_t>(offset + row)].c_str(), width);
+ }
+ footer("Up/Down scroll PgUp/PgDn page Home/End jump Esc or Enter close " +
+ std::to_string(offset + 1) + "/" + std::to_string(lines.size()));
+ refresh();
+ const int key = getch();
+ if (escape_key(key) || enter_key(key)) return;
+ if (key == KEY_UP) offset = std::max(0, offset - 1);
+ else if (key == KEY_DOWN) offset = std::min(std::max(0, static_cast<int>(lines.size()) - visible_rows), offset + 1);
+ else if (key == KEY_PPAGE) offset = std::max(0, offset - visible_rows);
+ else if (key == KEY_NPAGE) offset = std::min(std::max(0, static_cast<int>(lines.size()) - visible_rows), offset + visible_rows);
+ else if (key == KEY_HOME) offset = 0;
+ else if (key == KEY_END) offset = std::max(0, static_cast<int>(lines.size()) - visible_rows);
+ }
+}
+
 std::optional<int> menu(const std::string& title, const std::string& detail,
  const std::vector<std::string>& choices, int selected = 0) {
  if (choices.empty()) return std::nullopt;
@@ -640,23 +694,23 @@ void choose_next_speaker(ConferenceEngine& engine, std::string& notice) {
 void handle_input(ConferenceEngine& engine, const std::string& input, std::string& notice) {
  const auto [command, argument] = split_command(input);
  if (command == "/help") {
- (void)edit_text("Conference REPL help", repl_help_text(), "Esc or Enter closes.", true);
+ view_text("Conference REPL help", repl_help_text());
  return;
  }
  if (command == "/status") {
- (void)edit_text("Conference status", engine.summary(), "Esc or Enter closes.", true);
+ view_text("Conference status", engine.summary());
  return;
  }
  if (command == "/agenda") {
- (void)edit_text("Agenda", agenda_report(engine.snapshot()), "Esc or Enter closes.", true);
+ view_text("Agenda", agenda_report(engine.snapshot()));
  return;
  }
  if (command == "/members") {
- (void)edit_text("Meeting seats", member_report(engine.snapshot()), "Esc or Enter closes.", true);
+ view_text("Meeting seats", member_report(engine.snapshot()));
  return;
  }
  if (command == "/questions") {
- (void)edit_text("Moderator questions", question_report(engine.snapshot()), "Esc or Enter closes.", true);
+ view_text("Moderator questions", question_report(engine.snapshot()));
  return;
  }
  if (command == "/answer") {
@@ -712,7 +766,7 @@ void handle_input(ConferenceEngine& engine, const std::string& input, std::strin
  return;
  }
  if (command == "/summary") {
- (void)edit_text("Meeting summary", engine.summary(), "Esc or Enter closes.", true);
+ view_text("Meeting summary", engine.summary());
  return;
  }
  if (command == "/goal") {
@@ -722,7 +776,7 @@ void handle_input(ConferenceEngine& engine, const std::string& input, std::strin
  return;
  }
  if (command == "/rules") {
- (void)edit_text("Conference rules", engine.snapshot().rules, "Esc or Enter closes.", true);
+ view_text("Conference rules", engine.snapshot().rules);
  return;
  }
  if (command == "/rule" && argument == "edit") {
@@ -900,7 +954,7 @@ void control(ConferenceEngine& engine, int selection, std::string& notice) {
  const auto conference = engine.snapshot();
  if (conference.status == ConferenceStatus::preparing) {
  if (selection == 1) {
- (void)edit_text("Meeting summary", engine.summary(), "Esc or Enter closes.", true);
+ view_text("Meeting summary", engine.summary());
  } else if (selection == 2 && confirm("End conference", "Stop this meeting while preserving the saved history.", "End")) {
  engine.stop(); notice = "Conference stopped";
  } else if (selection == 0) {
@@ -912,7 +966,7 @@ void control(ConferenceEngine& engine, int selection, std::string& notice) {
  switch (selection) {
  case 0: review_meeting_setup(engine, notice); return;
  case 1: engine.prepare_setup(); notice = "Moderator plan regenerated; review it before approval"; return;
- case 2: (void)edit_text("Meeting summary", engine.summary(), "Esc or Enter closes.", true); return;
+ case 2: view_text("Meeting summary", engine.summary()); return;
  case 3:
  if (auto rules = edit_text("Conference rules", conference.rules, "Rules apply to future turns.")) {
  engine.update_rules(*rules); notice = "Rules updated";
@@ -931,7 +985,7 @@ void control(ConferenceEngine& engine, int selection, std::string& notice) {
  case 0: answer_pending_question(engine, conference, notice); return;
  case 1: engine.interrupt("User question；Please missing information CONTINUE。 "); notice = "No-answer response recorded"; return;
  case 2: review_meeting_setup(engine, notice); return;
- case 3: (void)edit_text("Meeting summary", engine.summary(), "Esc or Enter closes.", true); return;
+ case 3: view_text("Meeting summary", engine.summary()); return;
  case 4:
  if (confirm("End conference", "Stop this meeting while preserving the saved history.", "End")) {
  engine.stop(); notice = "Conference stopped";
@@ -955,7 +1009,7 @@ void control(ConferenceEngine& engine, int selection, std::string& notice) {
  engine.run_autopilot(); notice = "Autopilot started in background"; break;
  case 5: configure_autopilot(engine, notice); break;
  case 6: notice = "Focus the input and press Enter to send an interruption"; break;
- case 7: (void)edit_text("Meeting summary", engine.summary(), "Esc or Enter closes.", true); break;
+ case 7: view_text("Meeting summary", engine.summary()); break;
  case 8:
  if (auto rules = edit_text("Conference rules", conference.rules, "Rules apply to future turns.")) {
  engine.update_rules(*rules); notice = "Rules updated";
@@ -1039,7 +1093,7 @@ void Tui::run_conference(ConferenceEngine& engine) {
  const int key = getch();
  if (key == ERR) continue;
  if (key == '?' && focus != Focus::input) {
- (void)edit_text("Conference REPL help", repl_help_text(), "Esc or Enter closes.", true);
+ view_text("Conference REPL help", repl_help_text());
  continue;
  }
  if (escape_key(key)) {

@@ -1609,6 +1609,28 @@ std::string ConferenceEngine::summary() const {
  std::ostringstream output;
  output << "goal：" << conference_.goal << "\nStatus：" << conference_status_name(conference_.status)
  << "\nRounds：" << conference_.round;
+ const auto moderator = std::find_if(conference_.participants.begin(), conference_.participants.end(),
+ [](const auto& participant) { return participant.kind == "moderator"; });
+ const auto final_moderator = std::find_if(conference_.events.rbegin(), conference_.events.rend(),
+ [&](const auto& event) {
+ return moderator != conference_.participants.end() && event.type == "discussion" &&
+ event.state == "completed" && event.author == moderator->name && !event.content.empty();
+ });
+ if (final_moderator != conference_.events.rend()) {
+ output << "\nModeratorfinalconclusion：";
+ std::istringstream lines(final_moderator->content);
+ std::string line;
+ bool wrote_line = false;
+ while (std::getline(lines, line)) {
+ const auto directive = trim(line);
+ if (directive.rfind("NEXT_SPEAKER:", 0) == 0 || directive.rfind("NEXT_PURPOSE:", 0) == 0 ||
+ directive.rfind("AGENDA:", 0) == 0 || directive.rfind("AGENDA_CONCLUSION:", 0) == 0 ||
+ directive.rfind("AUTOPILOT:", 0) == 0) continue;
+ output << "\n" << line;
+ wrote_line = true;
+ }
+ if (!wrote_line) output << " finalconclusion。";
+ }
  const auto write_section = [&](const std::string& title, const std::vector<std::string>& values) {
  output << "\n" << title << "：";
  if (values.empty()) output << " ";
