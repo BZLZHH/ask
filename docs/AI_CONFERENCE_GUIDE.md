@@ -104,6 +104,8 @@ conference for ， can complete 。
 | `Esc` | 、 or conference |
 | `f` | ； `End` |
 
+ ， REPL：`Up` / `Down` ，`Tab` ，`Ctrl-U` 。 Ordinary words （ UTF-8 、 and `?`） ， or 。
+
  ， using `Up` / `Down` 、`Enter` line。 ， ENDconference or authorized tool， confirmation ， default 。
 
 ## 5. conference 
@@ -136,8 +138,15 @@ conference ， 。 using ：
 | | using |
 | --- | --- |
 | `/ask < > <question>` | propose question |
+| `/answer < >` | Moderatorquestion； directly |
 | `/goal < goal>` | Conference goal；conference UserStatus |
 | `/focus <agendanumbers>` | agenda items ， `/focus 3` |
+| `/status` | conferenceStatus |
+| `/agenda` | agendaStatus and Phase conclusion |
+| `/members` | numbersseat、 responsibilities and |
+| `/questions` | Moderatorquestion、options、Status and User |
+| `/help` | REPL |
+| `/run` / `/continue` | `/advance` / `/resume` use |
 | `/pause` / `/resume` | or CONTINUEconference |
 | `/summary` | |
 | `/setup` | or conferencedepth、numbersseat、 and rules |

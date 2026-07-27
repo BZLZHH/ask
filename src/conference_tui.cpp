@@ -36,6 +36,17 @@ enum class Focus { agenda, discussion, controls, input };
 
 bool enter_key(int key) { return key == '\n' || key == KEY_ENTER; }
 bool escape_key(int key) { return key == 27; }
+bool text_key(int key) { return key >= 32 && key < KEY_MIN; }
+
+void erase_previous_utf8(std::string& value, std::size_t& cursor) {
+ if (cursor == 0) return;
+ do { --cursor; } while (cursor > 0 &&
+ (static_cast<unsigned char>(value[cursor]) & 0xc0) == 0x80);
+ const auto end = cursor + 1;
+ std::size_t next = end;
+ while (next < value.size() && (static_cast<unsigned char>(value[next]) & 0xc0) == 0x80) ++next;
+ value.erase(cursor, next - cursor);
+}
 
 std::string clipped(const std::string& text, int width) {
  if (width <= 0) return {};
@@ -207,10 +218,10 @@ std::optional<std::string> edit_text(const std::string& title, const std::string
  else if (key == KEY_HOME) cursor = 0;
  else if (key == KEY_END) cursor = value.size();
  else if ((key == KEY_BACKSPACE || key == 127 || key == 8) && cursor > 0) {
- value.erase(cursor - 1, 1); --cursor;
+ erase_previous_utf8(value, cursor);
  } else if (key == KEY_DC && cursor < value.size()) {
  value.erase(cursor, 1);
- } else if (key >= 32 && key <= 126 && value.size() < 16384) {
+ } else if (text_key(key) && value.size() < 16384) {
  value.insert(value.begin() + static_cast<std::ptrdiff_t>(cursor), static_cast<char>(key)); ++cursor;
  }
  }
@@ -260,6 +271,76 @@ std::pair<std::string, std::string> split_command(const std::string& value) {
  const auto separator = cleaned.find_first_of(" \t");
  if (separator == std::string::npos) return {cleaned, {}};
  return {cleaned.substr(0, separator), trim_copy(cleaned.substr(separator + 1))};
+}
+
+std::string repl_help_text() {
+ return "Input REPL\n"
+ "Plain text sends a high-priority interruption. /answer responds to a pending moderator question.\n\n"
+ "Input keys\n"
+ "Up/Down: history Tab: complete slash command Ctrl-U: clear input\n\n"
+ "Inspect\n/status /agenda /members /questions /summary /rules /help\n\n"
+ "Control\n/advance or /run /pause /resume or /continue /next /focus N /setup\n"
+ "/ask ROLE QUESTION /answer TEXT /goal TEXT /decision /auto [run|on|off]\n"
+ "/autopilot /execute /export [path] /end";
+}
+
+std::string agenda_report(const Conference& conference) {
+ std::ostringstream output;
+ output << "Agenda";
+ for (std::size_t index = 0; index < conference.agenda.size(); ++index) {
+ const auto& item = conference.agenda[index];
+ output << "\n" << index + 1 << ". [" << item.status << "] " << item.title;
+ if (!item.conclusion.empty()) output << "\n Conclusion: " << item.conclusion;
+ }
+ return output.str();
+}
+
+std::string member_report(const Conference& conference) {
+ std::ostringstream output;
+ output << "Meeting seats";
+ for (const auto& item : conference.participants) {
+ output << "\n#" << item.seat_number << " " << item.name << " | " << item.role
+ << " | " << item.responsibility << " | " << item.provider << " / " << item.model
+ << (item.enabled ? "" : " | disabled");
+ }
+ return output.str();
+}
+
+std::string question_report(const Conference& conference) {
+ std::ostringstream output;
+ output << "Moderator questions";
+ if (conference.user_questions.empty()) return output.str() + "\nNone";
+ for (const auto& item : conference.user_questions) {
+ output << "\n[" << item.status << "] " << item.question << " | " << item.type;
+ if (!item.options.empty()) {
+ output << "\nOptions:";
+ for (const auto& option : item.options) output << " | " << option;
+ }
+ if (!item.answer.empty()) output << "\nAnswer: " << item.answer;
+ }
+ return output.str();
+}
+
+void complete_repl_command(std::string& input, std::string& notice) {
+ if (input.empty() || input.front() != '/') return;
+ const auto [prefix, argument] = split_command(input);
+ if (!argument.empty()) return;
+ static const std::vector<std::string> commands = {
+ "/advance", "/answer", "/agenda", "/ask", "/auto", "/autopilot", "/continue",
+ "/decision", "/end", "/execute", "/export", "/focus", "/goal", "/help", "/members",
+ "/next", "/pause", "/questions", "/resume", "/rules", "/rule", "/run", "/setup",
+ "/status", "/summary"};
+ std::vector<std::string> matches;
+ for (const auto& command : commands) if (command.rfind(prefix, 0) == 0) matches.push_back(command);
+ if (matches.size() == 1) {
+ input = matches.front() + " ";
+ notice = "Command completed";
+ } else if (!matches.empty()) {
+ std::ostringstream list;
+ list << "Commands:";
+ for (const auto& match : matches) list << " " << match;
+ notice = list.str();
+ }
 }
 
 const ConferenceUserQuestion* pending_user_question(const Conference& conference) {
@@ -558,10 +639,36 @@ void choose_next_speaker(ConferenceEngine& engine, std::string& notice) {
 
 void handle_input(ConferenceEngine& engine, const std::string& input, std::string& notice) {
  const auto [command, argument] = split_command(input);
+ if (command == "/help") {
+ (void)edit_text("Conference REPL help", repl_help_text(), "Esc or Enter closes.", true);
+ return;
+ }
+ if (command == "/status") {
+ (void)edit_text("Conference status", engine.summary(), "Esc or Enter closes.", true);
+ return;
+ }
+ if (command == "/agenda") {
+ (void)edit_text("Agenda", agenda_report(engine.snapshot()), "Esc or Enter closes.", true);
+ return;
+ }
+ if (command == "/members") {
+ (void)edit_text("Meeting seats", member_report(engine.snapshot()), "Esc or Enter closes.", true);
+ return;
+ }
+ if (command == "/questions") {
+ (void)edit_text("Moderator questions", question_report(engine.snapshot()), "Esc or Enter closes.", true);
+ return;
+ }
+ if (command == "/answer") {
+ if (argument.empty()) { notice = "Usage: /answer <response>"; return; }
+ engine.interrupt(argument);
+ notice = "Answer or user message recorded";
+ return;
+ }
  if (command == "/pause") { engine.pause(); notice = "Conference paused"; return; }
- if (command == "/resume") { engine.resume(); notice = "Conference resumed"; return; }
- if (command == "/end") { engine.stop(); notice = "Conference stopped"; return; }
- if (command == "/advance") {
+ if (command == "/resume" || command == "/continue") { engine.resume(); notice = "Conference resumed"; return; }
+ if (command == "/end" || command == "/stop") { engine.stop(); notice = "Conference stopped"; return; }
+ if (command == "/advance" || command == "/run") {
  if (engine.snapshot().status == ConferenceStatus::awaiting_setup || engine.snapshot().status == ConferenceStatus::draft) {
  notice = "Review and approve the meeting plan before advancing"; return;
  }
@@ -659,6 +766,10 @@ void handle_input(ConferenceEngine& engine, const std::string& input, std::strin
  const auto path = engine.export_summary(argument);
  notice = "Summary exported to " + path.string();
  } catch (const std::exception& error) { notice = error.what(); }
+ return;
+ }
+ if (!command.empty() && command.front() == '/') {
+ notice = "Unknown command. Type /help or press ?";
  return;
  }
  engine.interrupt(input);
@@ -912,6 +1023,8 @@ void Tui::run_conference(ConferenceEngine& engine) {
  int event_offset = live_event_start(engine.snapshot().events, std::max(1, LINES - 11));
  int control_selected = 0;
  std::string input;
+ std::vector<std::string> input_history;
+ int history_index = -1;
  std::string notice;
  bool follow_live = true;
  for (;;) {
@@ -925,8 +1038,8 @@ void Tui::run_conference(ConferenceEngine& engine) {
  draw(conference, focus, agenda_selected, event_offset, control_selected, input, notice, follow_live);
  const int key = getch();
  if (key == ERR) continue;
- if (key == '?') {
- (void)edit_text("AI Conference help", "Left/Right: change focus\nUp/Down: select or scroll\nEnd: return to live discussion\nf: toggle live follow\nEnter: open or execute\nSpace: pause/resume\nTab: next focus\ni: focus input\nEsc: leave\nText + Enter: high-priority interruption\n/setup review meeting plan\n/advance (read-only) /execute (user-authorized write turn)\n/auto [run|on|off] /autopilot (configure selected permissions)\n/summary /goal TEXT /rules /rule edit /focus N\n/ask ROLE QUESTION /decision /export [path] /pause /resume /end", "Esc or Enter closes.", true);
+ if (key == '?' && focus != Focus::input) {
+ (void)edit_text("Conference REPL help", repl_help_text(), "Esc or Enter closes.", true);
  continue;
  }
  if (escape_key(key)) {
@@ -939,17 +1052,17 @@ void Tui::run_conference(ConferenceEngine& engine) {
  if (key == KEY_F(1)) { focus = Focus::discussion; continue; }
  if (key == KEY_F(2)) { focus = Focus::agenda; continue; }
  if (key == KEY_F(3)) { focus = Focus::controls; continue; }
- if (key == '\t' || key == KEY_RIGHT) { focus = static_cast<Focus>((static_cast<int>(focus) + 1) % 4); continue; }
- if (key == KEY_BTAB) { focus = static_cast<Focus>((static_cast<int>(focus) + 3) % 4); continue; }
- if (key == KEY_LEFT) { focus = static_cast<Focus>((static_cast<int>(focus) + 3) % 4); continue; }
- if (key == 'i') { focus = Focus::input; continue; }
+ if (focus != Focus::input && (key == '\t' || key == KEY_RIGHT)) { focus = static_cast<Focus>((static_cast<int>(focus) + 1) % 4); continue; }
+ if (focus != Focus::input && key == KEY_BTAB) { focus = static_cast<Focus>((static_cast<int>(focus) + 3) % 4); continue; }
+ if (focus != Focus::input && key == KEY_LEFT) { focus = static_cast<Focus>((static_cast<int>(focus) + 3) % 4); continue; }
+ if (key == 'i' && focus != Focus::input) { focus = Focus::input; continue; }
  if (key == 'f' && focus == Focus::discussion) {
  follow_live = !follow_live;
  if (follow_live) event_offset = live_event_start(conference.events, std::max(1, LINES - 11));
  notice = follow_live ? "Timeline follows live discussion" : "Timeline review mode";
  continue;
  }
- if (key == ' ') {
+ if (key == ' ' && focus != Focus::input) {
  if (engine.snapshot().status == ConferenceStatus::running) engine.pause(); else engine.resume();
  notice = "Conference status updated"; continue;
  }
@@ -957,9 +1070,34 @@ void Tui::run_conference(ConferenceEngine& engine) {
  if (enter_key(key)) {
  if (input.empty()) { notice = "Type an interruption before sending"; continue; }
  handle_input(engine, input, notice);
+ if (input_history.empty() || input_history.back() != input) input_history.push_back(input);
+ if (input_history.size() > 100) input_history.erase(input_history.begin());
+ history_index = -1;
  input.clear(); focus = Focus::discussion;
- } else if ((key == KEY_BACKSPACE || key == 127 || key == 8) && !input.empty()) input.pop_back();
- else if (key >= 32 && key <= 126 && input.size() < 16384) input.push_back(static_cast<char>(key));
+ } else if (key == KEY_UP && !input_history.empty()) {
+ history_index = history_index < 0 ? static_cast<int>(input_history.size()) - 1
+ : std::max(0, history_index - 1);
+ input = input_history[static_cast<std::size_t>(history_index)];
+ } else if (key == KEY_DOWN && history_index >= 0) {
+ ++history_index;
+ if (history_index >= static_cast<int>(input_history.size())) {
+ history_index = -1;
+ input.clear();
+ } else {
+ input = input_history[static_cast<std::size_t>(history_index)];
+ }
+ } else if (key == '\t') {
+ complete_repl_command(input, notice);
+ } else if (key == 21) {
+ input.clear(); history_index = -1; notice = "Input cleared";
+ } else if ((key == KEY_BACKSPACE || key == 127 || key == 8) && !input.empty()) {
+ std::size_t cursor = input.size();
+ erase_previous_utf8(input, cursor);
+ history_index = -1;
+ } else if (text_key(key) && input.size() < 16384) {
+ input.push_back(static_cast<char>(key));
+ history_index = -1;
+ }
  continue;
  }
  if (focus == Focus::agenda) {

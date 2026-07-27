@@ -27,6 +27,7 @@ Current version: `0.5.0`
 
 ## Design Documents
 
+- [ （ ）](docs/QUICKSTART.zh-CN.md)： 、configuration through Ordinary 、Do and AI Conference task 。
 - [AI Conference ](docs/AI_CONFERENCE.md)： AI conference 、conference 、TUI、 、tool authorization and data 。
 
 AI Conference Moderator advance default 。 conference `Configure autopilot permissions` or `/autopilot`， advance or 4/8/12/20 Rounds， authorization `write_file`、 `run_command`、`fetch_http`、`browse_page` or `web_search`。 through Moderator requestUserdecided、completeconference、User or ； depth Moderator check ， ENDconference。 using tool； ，User 、 or authorization 。
