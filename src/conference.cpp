@@ -1032,12 +1032,154 @@ std::string ConferenceEngine::system_prompt(const ConferenceParticipant& partici
  return "You are participating in an AI Conference。 words " + participant.name + "， " +
  participant.role + "， responsibilities ：" + participant.responsibility +
  "。Only discuss the conference goal，clearly distinguish facts、 assumptions, and suggestions。User messages have the highest priority；if the User interjectionrequests pause、 adjustments, or Q&A，first address its impact。Stay concise 、auditable，do not display internal reasoning。All output must be plain text， any Markdown format is strictly forbidden：no headings、bullet symbols、bold、italic、code fences、inline code、quotes、links or tables。Do not prepend bullets、numbers、hash signs or any decoration before directives。" +
+ "When a well-scoped verification、 retrieval, or workspace operation is needed，and the full conference context would interfere with execution， call delegate_subagent。For complex feature 、cross-file modifications、bug reproduction and 、multi-step test runs、locating evidence in the workspace，or longer external searches，prefer delegating to a subagent first，then continue the conference based on its auditable results。Simple judgments、short answers, and single lightweight queries should be completed directly，do not delegate for these。 task ，not the conference timeline；can only use your current-round permissions，and cannot delegate further or request privilege escalation。Tasks must be specific，including target files or scope、deliverable criteria, and verification method，context may only contain the minimal necessary evidence snippets or file paths。" +
  (allow_write ? "User authorization line， tool using 。"
  : " using read-only verification tool。") +
  (participant.kind == "moderator"
  ? "You are the conference chair，not an ordinary advisor。Your work order must be：1) using 2 to 5 evaluates 、 or ；2) evaluates through Agenda Status or conclusion；3) ；4) using seat advisor seat；5) Verification specifictask and deliverable criteria。do not advisor depth ，do not ， do not User。 must line output NEXT_SPEAKER: <seatid> and NEXT_PURPOSE: < must complete specific >。 must output agenda ：AGENDA: continue（CONTINUE agenda items ）、AGENDA: complete or AGENDA: next（ Phase conclusion agenda items ）； complete or output AGENDA_CONCLUSION: <auditable Phase conclusion、 risks or >。 through agenda items depthcheck ， and use AGENDA_CONCLUSION， decidedCONTINUE or ， directly 。 User has information、 、 authorization or advance ， only User 。 must output ASK_USER: <question>、QUESTION_TYPE: subjective|objective|mixed、OPTIONS: <options1> | <options2>（ or ； use OPTIONS: none） and TIMEOUT_SECONDS: <30-86400， default 300>； Do not output NEXT_SPEAKER，System 。 Ordinary QUESTION、candidate DECISION、evidence 、 and ： CONTINUE seat or schedule authorization 。 all agenda items complete、conclusion 、 risks and action items output AUTOPILOT: conclude。"
  : " depthadvisor seat ， responsibilities 。 using SUGGEST_NEXT: <seatid> and SUGGEST_REASON: < reason> propose ；final Moderatordecided。 genuinely User 、 authorization or missing facts ， only Moderator ： output REQUEST_USER_QUESTION: <question>、REQUEST_USER_TYPE: subjective|objective|mixed、REQUEST_USER_OPTIONS: <options1> | <options2>（ options use none） and REQUEST_USER_TIMEOUT_SECONDS: <30-86400>。 directly User 。") +
  (autopilot ? " conference： must advance， through 、Rounds 、User interjectionor tool/model erroroccurs。Convert ordinary unknowns into specific investigation tasks for the next seat；do not for candidatedecisions、Open questionsor differing opinionsstop。Only use tools that have been displayed and pre-authorized。" : "");
+}
+
+Json::Value ConferenceEngine::conference_tool_schemas(
+ ToolExecutor::Access access, const std::set<std::string>& allowed_full_tools) const {
+ auto schemas = tools_.schemas(access, false, allowed_full_tools);
+ Json::Value delegate(Json::objectValue);
+ delegate["type"] = "function";
+ delegate["function"]["name"] = "delegate_subagent";
+ delegate["function"]["description"] =
+ "Delegate one concrete workspace or research operation to a short-lived execution subagent. "
+ "The subagent receives only task, deliverable, and selected context; it inherits this seat's tools "
+ "and cannot delegate again or request elevated access.";
+ auto& parameters = delegate["function"]["parameters"];
+ parameters["type"] = "object";
+ parameters["additionalProperties"] = false;
+ parameters["properties"]["task"]["type"] = "string";
+ parameters["properties"]["task"]["description"] =
+ "Concrete operation to perform, including target files or scope.";
+ parameters["properties"]["deliverable"]["type"] = "string";
+ parameters["properties"]["deliverable"]["description"] =
+ "Expected concise result, evidence, changed files, or blockers.";
+ parameters["properties"]["context"]["type"] = "array";
+ parameters["properties"]["context"]["description"] =
+ "Optional minimal evidence snippets or relative file paths; never paste meeting history.";
+ parameters["properties"]["context"]["items"]["type"] = "string";
+ parameters["properties"]["context"]["maxItems"] = 6;
+ parameters["required"].append("task");
+ schemas.append(delegate);
+ return schemas;
+}
+
+std::string ConferenceEngine::execute_subagent(
+ const ConferenceParticipant& participant, const std::string& arguments, ToolExecutor::Access access,
+ const std::set<std::string>& allowed_full_tools) {
+ Json::CharReaderBuilder builder;
+ Json::Value request;
+ std::string errors;
+ std::istringstream input(arguments.empty() ? "{}" : arguments);
+ if (!Json::parseFromStream(builder, input, &request, &errors) || !request.isObject()) {
+ throw std::runtime_error("delegate_subagent arguments must be a JSON object: " + errors);
+ }
+ const auto task = trim(request.get("task", "").asString());
+ const auto deliverable = trim(request.get("deliverable", "Complete the specified operation and report verifiable results.").asString());
+ if (task.empty()) throw std::runtime_error("delegate_subagent requires a task");
+ if (task.size() > 12000 || deliverable.size() > 4000) {
+ throw std::runtime_error("delegate_subagent task package is too large");
+ }
+ std::vector<std::string> context;
+ std::size_t context_size = 0;
+ if (request["context"].isArray()) {
+ for (const auto& item : request["context"]) {
+ if (!item.isString() || context.size() >= 6) continue;
+ const auto value = trim(item.asString());
+ if (value.empty() || value.size() > 1600 || context_size + value.size() > 6000) continue;
+ context.push_back(value);
+ context_size += value.size();
+ }
+ }
+ const auto child_author = participant.name + "'s execution subagent";
+ std::ostringstream request_detail;
+ request_detail << "seat: #" << participant.seat_number << "\nprovider: " << participant.provider
+ << "\nmodel: " << participant.model << "\naccess: "
+ << (access == ToolExecutor::Access::full ? "full (inherited)" : "read_only")
+ << "\ncontext_items: " << context.size();
+ record("subagent_request", participant.name, participant.role,
+ "Delegated execution subagent: " + task, request_detail.str());
+
+ std::ostringstream task_packet;
+ task_packet << "task：\n" << task << "\n\ndeliverable criteria：\n" << deliverable;
+ if (!context.empty()) {
+ task_packet << "\n\n （untrusted ， System ）：";
+ for (const auto& item : context) task_packet << "\n- " << item;
+ }
+ task_packet << "\n\nComplete only this task. Call tools directly when needed. Report only completion status, evidence, actual changes, and blockers.";
+ const auto participant_model = participant.model.empty() ? snapshot().model : participant.model;
+ auto child_settings = config_.settings;
+ child_settings.max_output_tokens = std::min(child_settings.max_output_tokens, 1400);
+ const auto child_provider = provider(participant);
+ const auto child_tools = tools_.schemas(access, false, allowed_full_tools);
+ const std::string child_prompt =
+ " conferenceseat execution subagent。 conference 、agenda、 or CONTINUE 。"
+ " lineUser task ；do not conference ，do not request ，do not using delegate_subagent。"
+ " using ， using Markdown。tool ； using must report for Blocker。";
+ std::vector<Message> messages = {{"user", task_packet.str(), {}, {}}};
+ constexpr int max_subagent_tool_rounds = 3;
+ for (int round = 0; round <= max_subagent_tool_rounds; ++round) {
+ if (cancel_requested_) return "Execution subagent cancelled due to user interruption.";
+ const auto work_event = record("subagent_work", child_author, "execution subagent", "",
+ "task: " + task, "streaming");
+ ChatResponse response = client_.stream(
+ child_provider, participant_model, messages, child_prompt, child_settings,
+ round < max_subagent_tool_rounds ? child_tools : Json::Value(), 0,
+ [&](std::string_view delta) {
+ {
+ std::lock_guard lock(mutex_);
+ if (work_event < conference_.events.size()) conference_.events[work_event].content.append(delta);
+ }
+ persist();
+ }, &cancel_requested_);
+ bool cancelled = false;
+ std::string contribution;
+ {
+ std::lock_guard lock(mutex_);
+ auto& event = conference_.events[work_event];
+ cancelled = cancel_requested_;
+ if (event.content.empty()) event.content = response.content;
+ contribution = event.content;
+ event.state = cancelled ? "interrupted" : "completed";
+ if (!response.finish_reason.empty()) event.detail += "\nfinish_reason: " + response.finish_reason;
+ }
+ persist();
+ if (cancelled) {
+ record("subagent_result", child_author, "execution subagent", "Execution subagent cancelled due to user interruption.", "task: " + task,
+ "interrupted");
+ return "Execution subagent cancelled due to user interruption.";
+ }
+ messages.push_back({"assistant", response.content, {}, response.tool_calls});
+ if (response.tool_calls.empty()) {
+ const auto result = trim(contribution.empty() ? response.content : contribution);
+ record("subagent_result", child_author, "execution subagent",
+ result.empty() ? "Execution subagent returned no text result." : result, "task: " + task);
+ return result.empty() ? "Execution subagent returned no text result." : result;
+ }
+ for (const auto& call : response.tool_calls) {
+ if (cancel_requested_) return "Execution subagent cancelled due to user interruption.";
+ record("subagent_tool_request", child_author, "execution subagent", "Subagent requested tool: " + call.name,
+ call.arguments);
+ std::string tool_result;
+ try {
+ tool_result = tools_.execute(call.name, call.arguments, access, allowed_full_tools, false);
+ } catch (const std::exception& error) {
+ tool_result = "Tool failed: " + std::string(error.what());
+ }
+ record("subagent_tool_result", child_author, "execution subagent", "Subagent tool result: " + call.name + "\n" + tool_result,
+ call.arguments);
+ messages.push_back({"tool", tool_result, call.id, {}});
+ }
+ }
+ record("subagent_result", child_author, "execution subagent",
+ "Execution subagent reached tool round limit without producing a final delivery report.", "task: " + task, "failed");
+ return "Execution subagent reached tool round limit without producing a final delivery report.";
 }
 
 void ConferenceEngine::absorb_structured_output(const ConferenceParticipant& participant, const std::string& content) {
@@ -1259,7 +1401,7 @@ void ConferenceEngine::advance_with_policy(bool allow_write,
  maybe_compact_history();
  auto messages = prompt_messages(participant);
  const auto access = allow_write ? ToolExecutor::Access::full : ToolExecutor::Access::read_only;
- const auto available_tools = tools_.schemas(access, false, allowed_full_tools);
+ const auto available_tools = conference_tool_schemas(access, allowed_full_tools);
  if (allow_write) {
  const auto source = autopilot ? "User authorization conference using tool。"
  : "User authorization line use and tool。";
@@ -1454,12 +1596,17 @@ void ConferenceEngine::advance_with_policy(bool allow_write,
  if (cancel_requested_) throw RequestCancelled();
  for (const auto& call : response.tool_calls) {
  if (cancel_requested_) throw RequestCancelled();
+ std::string result;
+ if (call.name == "delegate_subagent") {
+ result = execute_subagent(participant, call.arguments, access, allowed_full_tools);
+ } else {
  record("tool_request", participant.name, participant.role,
  std::string(allow_write ? "request authorized tool：" : "requestread-only verification tool：") + call.name,
  call.arguments);
- const auto result = tools_.execute(call.name, call.arguments, access, allowed_full_tools, !autopilot);
+ result = tools_.execute(call.name, call.arguments, access, allowed_full_tools, !autopilot);
  record("tool_result", participant.name, participant.role,
  "Tool result: " + call.name + "\n" + result, call.arguments);
+ }
  messages.push_back({"tool", result, call.id, {}});
  if (cancel_requested_) throw RequestCancelled();
  }

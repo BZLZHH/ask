@@ -246,6 +246,14 @@ conference ，Moderator for ， quotes。 ， Discussion ； or failed for 。co
 - `autopilot_pause`： User。
 - `autopilot_limit`： advance through 。
 
+### execution subagent
+
+ conferenceseat call `delegate_subagent`， 、 retrieval, or workspace operation is needed execution subagent。 through using seat `task`、`deliverable` and `context`（ ）， through conference 、 or conference 。
+
+ 、 、bug reproduction and 、 、 evidence or using 。task use goal or 、 、Verification and ；complete seat ，Moderatordecided 。Simple judgments、 and 。
+
+ seat ， ： seat using tool；User authorization line using tool； advance User authorized tool 。 、 request ， line 。 and toolrequest、 、final and `subagent_*` use 。
+
  confirmation decisions、 line or ENDconference ， tool ，confirmation line and 。
 
 ## 10. and END

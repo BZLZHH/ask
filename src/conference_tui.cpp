@@ -88,6 +88,11 @@ std::string event_kind(const ConferenceEvent& event) {
  if (event.type == "tool_request") return "Tool request";
  if (event.type == "tool_authorization") return "Tool authorized";
  if (event.type == "tool_result") return "Tool result";
+ if (event.type == "subagent_request") return "Subagent delegated";
+ if (event.type == "subagent_work") return "Subagent working";
+ if (event.type == "subagent_tool_request") return "Subagent tool request";
+ if (event.type == "subagent_tool_result") return "Subagent tool result";
+ if (event.type == "subagent_result") return "Subagent result";
  if (event.type == "tool_error") return "Tool error";
  if (event.type == "error") return "Error";
  if (event.type == "rules") return "Rules";

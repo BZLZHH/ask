@@ -116,6 +116,8 @@ conference using “Moderator advance”。Moderator schedule 、advance agenda 
 
  tool using are conference ， to request 、 、 agenda items 、 、 、 and Status。tool for evidence， /failed/ Status、 output 、 output 、 line 、 line 、 using and agenda items 。
 
+conference using `delegate_subagent` execution subagent， complete conference specific 。 using task、deliverable criteria and ； through conference ， 。 seat 、providers、 / tool and advance ， request 。 task、 tool using 、 output 、final 、failed and User ， for tool seat。
+
  using ：requeststart “ ” ， through token 。 END for complete， `FACT:`、`QUESTION:`、`DECISION:`、`ACTION:` and Moderator `AGENDA:` / `AUTOPILOT:` 。 failed through content for complete， use facts、decisions or agendaStatus。if the providers END， `Output limit`、END reason and output ， 。User ， ； through 。
 
 conference using Moderator 。 through ，Moderator for auditable ； through and 。 or use ，failed failed 。 `response_token_limit`， using configuration output 。

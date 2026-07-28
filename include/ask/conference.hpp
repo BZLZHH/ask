@@ -209,6 +209,11 @@ class ConferenceEngine {
   std::vector<Message> prompt_messages(const ConferenceParticipant& participant) const;
   std::string system_prompt(const ConferenceParticipant& participant, bool allow_write,
                             bool autopilot = false) const;
+  Json::Value conference_tool_schemas(ToolExecutor::Access access,
+                                      const std::set<std::string>& allowed_full_tools) const;
+  std::string execute_subagent(const ConferenceParticipant& participant, const std::string& arguments,
+                               ToolExecutor::Access access,
+                               const std::set<std::string>& allowed_full_tools);
   std::size_t record(const std::string& type, const std::string& author, const std::string& role,
                      const std::string& content, const std::string& detail = {},
                      const std::string& state = "completed");
