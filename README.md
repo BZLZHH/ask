@@ -3,7 +3,7 @@
 A Unix and Unix-like command-line client for quick AI questions, persistent conversations, and explicitly authorized local automation.
 
 
-Current version: `0.5.0`
+Current version: `0.6.0`
 
 ## Features
 
