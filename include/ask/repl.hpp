@@ -36,7 +36,8 @@ class Conversation {
 
  private:
   bool maybe_compact(const std::string& pending, bool do_mode,
-                     const std::string& system_prompt);
+                     const std::string& system_prompt,
+                     const std::string& runtime_permission);
   void report_cache_usage();
   std::string handle_do_mode_request(const std::string& arguments,
                                      bool& allow_once_for_next_batch);

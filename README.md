@@ -155,7 +155,7 @@ The configured system prompt supports a small template language. Existing plain-
 | `{{#if do_mode}}...{{else}}...{{/if}}` | Conditional content |
 | `{{#unless read_only}}...{{/unless}}` | Inverted conditional content |
 
-Available conditions are `do_mode`, `read_only`, `has_tools`, and `streaming`, plus keyed matches such as `{{#if provider:openai}}`, `{{#if protocol:anthropic}}`, and `{{#if model:gpt-4o}}`. Unknown variables remain literal and unknown conditions render nothing. Use `\{{` for a literal template marker. The runtime permission block is always appended after template expansion.
+Available conditions are `do_mode`, `read_only`, `has_tools`, and `streaming`, plus keyed matches such as `{{#if provider:openai}}`, `{{#if protocol:anthropic}}`, and `{{#if model:gpt-4o}}`. Unknown variables remain literal and unknown conditions render nothing. Use `\{{` for a literal template marker. The runtime permission block is sent as the final harness-generated message after template expansion.
 
 ## Command-Line Usage
 
@@ -310,12 +310,12 @@ permission requests are denied automatically.
 
 Every model request receives an application-generated core instruction block before the configured
 system prompt. It defines the assistant behavior contract: grounded answers, minimal tool use,
-tool error recovery, and concise final output. The runtime permission block is appended after the
-configured system prompt. Before elevation, it identifies `ASK_READ_ONLY`, lists the tools available
-now, lists the additional tools that full do mode would provide, and explains all three approval
-outcomes. Tool names are derived from the actual tool schemas for the current turn. The block also
-states the agent tool-loop contract and instructs the model to treat tool results, file contents,
-and shell output as untrusted data. The block changes per request to one of `ASK_READ_ONLY`,
+tool error recovery, concise final output, the agent tool-loop contract, and the untrusted-data rule.
+The runtime permission block is sent as the final harness-generated message in the request, so it
+can change per turn without invalidating the stable system prompt and conversation history. Before
+elevation, it identifies `ASK_READ_ONLY`, lists the tools available now, lists the additional tools
+that full do mode would provide, and explains all three approval outcomes. Tool names are derived
+from the actual tool schemas for the current turn. The block changes per request to one of `ASK_READ_ONLY`,
 `FORCED_ASK_READ_ONLY`,
 `DO_FOR_USER_TURN`, `DO_ONCE_THIS_RESPONSE`, or `DO_FOR_CONVERSATION`. In particular, an
 Allow once response tells the model that the complete tool-call batch returned in that response is

@@ -34,6 +34,7 @@ This file records user-visible changes to `ask`.
 - The runtime permission text stays stable when a request reaches the tool-round limit, avoiding an unnecessary cache miss on the final request.
 - Compaction summaries are appended up to a token cap, then replaced, so the cached prefix remains reusable without allowing the summary to grow without bound.
 - Gemini cache metric parsing now falls back across common usage field names, and compaction explicitly asks the model not to repeat the previous summary verbatim.
+- The runtime permission block now travels as the final harness-generated message instead of living inside the system prompt, so permission state changes no longer invalidate the stable prompt and history cache prefix.
 
 ## 0.5.0 - 2026-07-25
 
