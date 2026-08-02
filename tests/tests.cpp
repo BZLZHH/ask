@@ -420,6 +420,17 @@ void test_conferences(const std::filesystem::path& root) {
  typed_saved->deliverables.front().path == "src/feature.cpp" &&
  typed_saved->type == ask::ConferenceType::deliverable,
  "final answer and deliverable state round trip through conference storage");
+
+ auto switchable_conference = ask::ConferenceEngine::create(
+ config, "answer a question", root, config.default_provider, config.default_model);
+ ask::ConferenceEngine switchable_engine(config, std::move(switchable_conference), store);
+ switchable_engine.conference().final_answer = "old answer";
+ switchable_engine.update_type(ask::ConferenceType::deliverable, ask::TypeSource::explicit_selection);
+ expect(switchable_engine.conference().type == ask::ConferenceType::deliverable &&
+ switchable_engine.conference().final_answer.empty() &&
+ switchable_engine.conference().agenda.front().id == "requirements" &&
+ switchable_engine.conference().status == ask::ConferenceStatus::awaiting_setup,
+ "switching conference type regenerates type-specific agenda and clears answer state");
  expect(store.remove(engine.conference().id), "conference can be removed");
 }
 

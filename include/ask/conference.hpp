@@ -204,6 +204,7 @@ class ConferenceEngine {
   void approve_setup();
   void update_setup(ConferenceDepth depth, int advisor_count, int agenda_turn_budget,
                     const std::vector<ConferenceParticipant>& participants);
+  void update_type(ConferenceType type, TypeSource source);
   void assign_next_speaker(const std::string& participant_id, const std::string& reason,
                            bool return_to_moderator = false, bool user_override = false);
   void pause();

@@ -355,7 +355,8 @@ std::string repl_help_text() {
  "Up/Down: history Tab: complete slash command Ctrl-U: clear input\n\n"
  "Inspect\n/status /agenda /members /questions /summary /rules /help\n\n"
  "Control\n/advance or /run /pause /resume or /continue /next /focus N /setup\n"
- "/ask ROLE QUESTION /answer TEXT /goal TEXT /decision /auto [run|on|off]\n"
+ "/type advisory|deliverable /ask ROLE QUESTION /answer TEXT /goal TEXT /decision\n"
+ "/auto [run|on|off]\n"
  "/autopilot /execute /export [path] /end";
 }
 
@@ -404,7 +405,7 @@ void complete_repl_command(std::string& input, std::string& notice) {
  "/advance", "/answer", "/agenda", "/ask", "/auto", "/autopilot", "/continue",
  "/decision", "/end", "/execute", "/export", "/focus", "/goal", "/help", "/members",
  "/next", "/pause", "/questions", "/resume", "/rules", "/rule", "/run", "/setup",
- "/status", "/summary"};
+ "/status", "/summary", "/type"};
  std::vector<std::string> matches;
  for (const auto& command : commands) if (command.rfind(prefix, 0) == 0) matches.push_back(command);
  if (matches.size() == 1) {
@@ -767,6 +768,23 @@ void handle_input(ConferenceEngine& engine, const std::string& input, std::strin
  }
  if (command == "/autopilot") { configure_autopilot(engine, notice); return; }
  if (command == "/setup") { review_meeting_setup(engine, notice); return; }
+ if (command == "/type") {
+ if (argument.empty()) { notice = "Usage: /type advisory|deliverable"; return; }
+ ConferenceType type;
+ if (argument == "advisory") type = ConferenceType::advisory;
+ else if (argument == "deliverable") type = ConferenceType::deliverable;
+ else { notice = "Type must be advisory or deliverable"; return; }
+ const auto current = engine.snapshot();
+ if (current.status == ConferenceStatus::running &&
+ !confirm("Switch conference type",
+ "This regenerates the plan and clears answer/deliverable state.", "Switch")) {
+ notice = "Type switch cancelled";
+ return;
+ }
+ engine.update_type(type, TypeSource::explicit_selection);
+ notice = "Conference type switched to " + argument;
+ return;
+ }
  if (command == "/next") { choose_next_speaker(engine, notice); return; }
  if (command == "/auto") {
  if (argument == "off") {

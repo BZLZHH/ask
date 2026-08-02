@@ -461,6 +461,45 @@ bool ConferenceStore::remove(const std::string& id) const {
  return std::filesystem::remove(directory_ / (id + ".json"), error);
 }
 
+void apply_conference_type_defaults(Conference& conference) {
+ if (conference.type == ConferenceType::deliverable) {
+ conference.rules = "The moderator tracks delivery status; implementers must obtain write authorization first; verifiers must provide test or command evidence; nothing is marked complete without passing acceptance.";
+ conference.setup = {1, ConferenceDepth::standard, 4, 12, false, "user_confirms",
+ "The moderator proposes a four-seat delivery team: architecture, implementation, verification, and review; the moderator owns delivery status and acceptance."};
+ conference.participants = {
+ {"moderator", 0, "Moderator #0", "Moderator", "Coordinates overall, evaluates viewpoints, resolves disagreements, and designates the next speaker; does not independently produce deep proposals.", conference.provider, conference.model, "moderator", true},
+ {"architect", 1, "Architect #1", "Architect", "Proposes technical approaches, trade-offs, and evidence.", conference.provider, conference.model, "advisor", true},
+ {"implementer", 2, "Implementer #2", "Implementer", "Owns implementation steps, write-authorization requests, and actual changes.", conference.provider, conference.model, "advisor", true},
+ {"verifier", 3, "Verifier #3", "Verifier", "Owns testing, verification commands, and acceptance evidence.", conference.provider, conference.model, "auditor", true},
+ {"reviewer", 4, "Reviewer #4", "Reviewer", "Reviews risks, omissions, and delivery quality.", conference.provider, conference.model, "advisor", true},
+ };
+ conference.agenda = {{"requirements", "Clarify requirements, constraints, deliverables, and acceptance criteria", "active", "", "Moderator"},
+ {"design", "Define design, file scope, and implementation plan", "pending", "", "Architect"},
+ {"implementation", "Implement changes and preserve auditable results", "pending", "", "Implementer"},
+ {"verification", "Run verification, tests, and record evidence", "pending", "", "Verifier"},
+ {"delivery", "Confirm acceptance status and summarize deliverables", "pending", "", "Moderator"}};
+ } else {
+ conference.rules = "The moderator designates speakers; key conclusions must state their basis or assumptions; the auditor raises risks before candidate decisions; read-only tools are available for verification; write operations require user confirmation.";
+ conference.setup = {1, ConferenceDepth::standard, 3, 8, false, "user_confirms",
+ "The moderator proposes a three-seat advisory panel: domain expert, critical auditor, and synthesizer; the moderator only coordinates, evaluates, and dispatches."};
+ conference.participants = {
+ {"moderator", 0, "Moderator #0", "Moderator", "Coordinates overall, evaluates viewpoints, resolves disagreements, and designates the next speaker; does not independently produce deep proposals.", conference.provider, conference.model, "moderator", true},
+ {"expert", 1, "Domain Expert #1", "Domain Expert", "Provides domain knowledge, evidence, and judgment.", conference.provider, conference.model, "advisor", true},
+ {"auditor", 2, "Risk Auditor #2", "Auditor", "Reviews risks, counterexamples, missing assumptions, and evidence strength.", conference.provider, conference.model, "auditor", true},
+ {"synthesizer", 3, "Synthesizer #3", "Synthesizer", "Integrates viewpoints and forms the final answer draft.", conference.provider, conference.model, "advisor", true},
+ };
+ conference.agenda = {{"clarify", "Clarify problem, goal, and success criteria", "active", "", "Moderator"},
+ {"evidence", "Gather evidence and diverse perspectives", "pending", "", "Domain Expert"},
+ {"risks", "Review risks, evidence, and unresolved questions", "pending", "", "Auditor"},
+ {"options", "Propose and compare candidate explanations or approaches", "pending", "", "Expert"},
+ {"recommendation", "Form recommended conclusions and answers", "pending", "", "Synthesizer"},
+ {"final_answer", "Confirm final answer and wrap up", "pending", "", "Moderator"}};
+ }
+ conference.current_agenda_id = conference.agenda.front().id;
+ conference.next_speaker_id = "moderator";
+ conference.next_speaker_reason = "The moderator first confirms the conference scope, agenda, and speaker assignments.";
+}
+
 Conference ConferenceEngine::create(const Config& config, const std::string& goal,
  const std::filesystem::path& cwd, const std::string& provider_id,
  const std::string& model, const std::string& type) {
@@ -503,43 +542,8 @@ Conference ConferenceEngine::create(const Config& config, const std::string& goa
  conference.type = deliverable_hint ? ConferenceType::deliverable : ConferenceType::advisory;
  conference.type_source = TypeSource::inferred;
  }
- if (conference.type == ConferenceType::deliverable) {
- conference.rules = "The moderator tracks delivery status; implementers must obtain write authorization first; verifiers must provide test or command evidence; nothing is marked complete without passing acceptance.";
- conference.setup = {1, ConferenceDepth::standard, 4, 12, false, "user_confirms",
- "The moderator proposes a four-seat delivery team: architecture, implementation, verification, and review; the moderator owns delivery status and acceptance."};
- conference.participants = {
- {"moderator", 0, "Moderator #0", "Moderator", "Coordinates overall, evaluates viewpoints, resolves disagreements, and designates the next speaker; does not independently produce deep proposals.", conference.provider, conference.model, "moderator", true},
- {"architect", 1, "Architect #1", "Architect", "Proposes technical approaches, trade-offs, and evidence.", conference.provider, conference.model, "advisor", true},
- {"implementer", 2, "Implementer #2", "Implementer", "Owns implementation steps, write-authorization requests, and actual changes.", conference.provider, conference.model, "advisor", true},
- {"verifier", 3, "Verifier #3", "Verifier", "Owns testing, verification commands, and acceptance evidence.", conference.provider, conference.model, "auditor", true},
- {"reviewer", 4, "Reviewer #4", "Reviewer", "Reviews risks, omissions, and delivery quality.", conference.provider, conference.model, "advisor", true},
- };
- conference.agenda = {{"requirements", "Clarify requirements, constraints, deliverables, and acceptance criteria", "active", "", "Moderator"},
- {"design", "Define design, file scope, and implementation plan", "pending", "", "Architect"},
- {"implementation", "Implement changes and preserve auditable results", "pending", "", "Implementer"},
- {"verification", "Run verification, tests, and record evidence", "pending", "", "Verifier"},
- {"delivery", "Confirm acceptance status and summarize deliverables", "pending", "", "Moderator"}};
- } else {
- conference.rules = "The moderator designates speakers; key conclusions must state their basis or assumptions; the auditor raises risks before candidate decisions; read-only tools are available for verification; write operations require user confirmation.";
- conference.setup = {1, ConferenceDepth::standard, 3, 8, false, "user_confirms",
- "The moderator proposes a three-seat advisory panel: domain expert, critical auditor, and synthesizer; the moderator only coordinates, evaluates, and dispatches."};
- conference.participants = {
- {"moderator", 0, "Moderator #0", "Moderator", "Coordinates overall, evaluates viewpoints, resolves disagreements, and designates the next speaker; does not independently produce deep proposals.", conference.provider, conference.model, "moderator", true},
- {"expert", 1, "Domain Expert #1", "Domain Expert", "Provides domain knowledge, evidence, and judgment.", conference.provider, conference.model, "advisor", true},
- {"auditor", 2, "Risk Auditor #2", "Auditor", "Reviews risks, counterexamples, missing assumptions, and evidence strength.", conference.provider, conference.model, "auditor", true},
- {"synthesizer", 3, "Synthesizer #3", "Synthesizer", "Integrates viewpoints and forms the final answer draft.", conference.provider, conference.model, "advisor", true},
- };
- conference.agenda = {{"clarify", "Clarify problem, goal, and success criteria", "active", "", "Moderator"},
- {"evidence", "Gather evidence and diverse perspectives", "pending", "", "Domain Expert"},
- {"risks", "Review risks, evidence, and unresolved questions", "pending", "", "Auditor"},
- {"options", "Propose and compare candidate explanations or approaches", "pending", "", "Expert"},
- {"recommendation", "Form recommended conclusions and answers", "pending", "", "Synthesizer"},
- {"final_answer", "Confirm final answer and wrap up", "pending", "", "Moderator"}};
- }
- conference.current_agenda_id = conference.agenda.front().id;
+ apply_conference_type_defaults(conference);
  conference.status = ConferenceStatus::awaiting_setup;
- conference.next_speaker_id = "moderator";
- conference.next_speaker_reason = "The moderator first confirms the conference scope, agenda, and speaker assignments.";
  conference.events.push_back({"event-0-0", conference.created_at, 0, "system", "System", "",
  "The moderator has proposed a meeting plan; please review advisor seats, models, depth, and agenda before starting.", "", "completed"});
  return conference;
@@ -843,6 +847,29 @@ void ConferenceEngine::update_setup(ConferenceDepth depth, int advisor_count, in
  ++context_revision_;
  record("setup_updated", "User", "", "User updated conference depth, seats, or models; subsequent contributions will use the new configuration.",
  "depth: " + conference_depth_name(depth));
+ persist();
+}
+
+void ConferenceEngine::update_type(ConferenceType type, TypeSource source) {
+ std::lock_guard lock(mutex_);
+ if (conference_.status == ConferenceStatus::completed || conference_.status == ConferenceStatus::stopped) {
+ record("type_error", "System", "", "Cannot switch type after the conference has ended.");
+ persist();
+ return;
+ }
+ conference_.type = type;
+ conference_.type_source = source;
+ conference_.setup.user_approved = false;
+ conference_.final_answer.clear();
+ conference_.deliverables.clear();
+ conference_.context_summary.clear();
+ conference_.compacted_until = 0;
+ apply_conference_type_defaults(conference_);
+ conference_.status = ConferenceStatus::awaiting_setup;
+ ++conference_.setup.version;
+ ++context_revision_;
+ record("type_changed", "User", "", "Conference type switched to " + conference_type_name(type) +
+ "（" + type_source_name(source) + "）。");
  persist();
 }
 
