@@ -184,7 +184,23 @@ class Provider(BaseHTTPRequestHandler):
         if request.get("stream"):
             last_role = messages[-1].get("role") if messages else ""
             user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
-            if request.get("tools") and user == "exhaust tools":
+            if request.get("tools") and user == "still wants tool":
+                self.send_sse([
+                    {"choices": [{"delta": {"tool_calls": [{
+                        "index": 0, "id": "call-limit", "type": "function",
+                        "function": {"name": "list_files", "arguments": "{}"},
+                    }]}, "finish_reason": "tool_calls"}]},
+                    "[DONE]",
+                ])
+            elif not request.get("tools") and user == "still wants tool":
+                self.send_sse([
+                    {"choices": [{"delta": {"tool_calls": [{
+                        "index": 0, "id": "call-limit-final", "type": "function",
+                        "function": {"name": "list_files", "arguments": "{}"},
+                    }]}, "finish_reason": "tool_calls"}]},
+                    "[DONE]",
+                ])
+            elif request.get("tools") and user == "exhaust tools":
                 call_number = sum(1 for message in messages if message.get("role") == "tool")
                 self.send_sse([
                     {"choices": [{"delta": {"tool_calls": [{
@@ -708,6 +724,52 @@ def stop_pty(terminal):
         terminal.process.kill()
         terminal.process.wait()
     terminal.close()
+
+
+def exercise_tool_limit_history(binary, server, root, env):
+    config_home = root / "tool-limit-config"
+    data_home = root / "tool-limit-data"
+    config_home.mkdir()
+    config = protocol_config(
+        "openai", f"http://127.0.0.1:{server.server_port}/v1", "mock-model"
+    )
+    config["settings"].update({
+        "conversation_entry_mode": "always_continue",
+        "max_tool_rounds": 1,
+        "stream_output": True,
+    })
+    (config_home / "config.json").write_text(json.dumps(config))
+    limit_env = env.copy()
+    limit_env["ASK_CONFIG_HOME"] = str(config_home)
+    limit_env["ASK_DATA_HOME"] = str(data_home)
+    before = request_count(server)
+    terminal = PtyProcess([binary, "still wants tool"], root, limit_env)
+    try:
+        terminal.expect("ask: model requested tools after the tool round limit")
+        terminal.expect("ask> ")
+        terminal.send(b"after limit\n")
+        reply = terminal.expect("ask> ")
+        assert b"echo: after limit" in reply, reply
+        terminal.send(b"!q\n")
+        assert terminal.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(terminal)
+    requests = request_slice(server, before)
+    after_request = requests[-1][1]
+    messages = after_request.get("messages", [])
+    dangling = [
+        call.get("id")
+        for message in messages
+        for call in message.get("tool_calls", [])
+        if call.get("id") == "call-limit-final"
+    ]
+    limit_results = [
+        message.get("content", "")
+        for message in messages
+        if message.get("role") == "tool" and "tool round limit reached" in message.get("content", "")
+    ]
+    assert not dangling, after_request
+    assert not limit_results, after_request
 
 
 def permission_environment(root, env, server, name, entry_mode="always_continue"):
@@ -1544,6 +1606,7 @@ def run(binary):
             assert (root / "made-by-tool.txt").read_text() == "tool worked"
             assert (data_home / "sessions.db").exists()
             exercise_repl(binary, root, env)
+            exercise_tool_limit_history(binary, server, root, env)
             exercise_permissions(binary, server, root, env)
             exercise_entry_policy(binary, server, root, env)
             exercise_protocols_and_auto_compact(binary, server, root, env)
