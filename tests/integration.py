@@ -818,7 +818,11 @@ def request_system_prompt(request):
 
 def assert_permission_context(request, state):
     prompt = request_system_prompt(request)
-    assert prompt.startswith("Test assistant\n\n[ask runtime permissions]\n"), prompt
+    assert prompt.startswith("[ask core instructions]\n"), prompt
+    assert "You are a command-line AI assistant in a tool-enabled agent harness" in prompt, prompt
+    assert "Test assistant" in prompt, prompt
+    assert prompt.index("[ask core instructions]") < prompt.index("Test assistant"), prompt
+    assert "[ask runtime permissions]" in prompt, prompt
     assert f"Current permission state: {state}" in prompt, prompt
     assert prompt.endswith("[end ask runtime permissions]"), prompt
     assert "AGENT LOOP" in prompt, prompt

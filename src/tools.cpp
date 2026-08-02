@@ -341,9 +341,11 @@ Json::Value ToolExecutor::schemas(Access access, bool allow_escalation) const {
   readonly_command["timeout_seconds"]["type"] = "integer";
   readonly_command["timeout_seconds"]["minimum"] = 1;
   readonly_command["timeout_seconds"]["maximum"] = 60;
-  tools.append(function_tool("run_readonly_command",
-                             "Run one allowlisted read-only command in a read-only workspace sandbox.",
-                             readonly_command, {"command"}));
+  tools.append(function_tool(
+      "run_readonly_command",
+      "Run one allowlisted read-only command in a read-only workspace sandbox. Use for inspection "
+      "when dedicated tools are not enough; never use it to modify anything.",
+      readonly_command, {"command"}));
 
   if (access == Access::read_only) {
     if (!allow_escalation) return tools;
@@ -355,7 +357,8 @@ Json::Value ToolExecutor::schemas(Access access, bool allow_escalation) const {
     request["suggested_scope"]["enum"].append("conversation");
     tools.append(function_tool(
         "request_do_mode",
-        "Ask the user to grant do access. This request never grants access by itself.",
+        "Ask the user to grant do access. Use only when the task cannot be completed with read-only "
+        "tools. This request never grants access by itself.",
         request, {"reason", "operation", "suggested_scope"}));
     return tools;
   }
@@ -364,8 +367,10 @@ Json::Value ToolExecutor::schemas(Access access, bool allow_escalation) const {
   write["path"] = string_property("File path relative to the workspace");
   write["content"] = string_property("Exact content to write");
   write["append"]["type"] = "boolean";
-  tools.append(function_tool("write_file", "Write or append a file inside the workspace.", write,
-                             {"path", "content"}));
+  tools.append(function_tool(
+      "write_file",
+      "Write or append a file inside the workspace. Use only for creating or modifying workspace files.",
+      write, {"path", "content"}));
 
   Json::Value command(Json::objectValue);
   command["command"] = string_property("Shell command to execute");
@@ -376,18 +381,26 @@ Json::Value ToolExecutor::schemas(Access access, bool allow_escalation) const {
   command["elevated"]["description"] =
       "Request one-time user approval to run outside the workspace sandbox, still as the current user";
   command["reason"] = string_property("Why running outside the workspace sandbox is necessary");
-  tools.append(function_tool("run_command", "Run a command. It is sandboxed unless elevated is approved.",
-                             command, {"command"}));
+  tools.append(function_tool(
+      "run_command",
+      "Run a command in the sandbox. Use for mutation or commands not covered by read-only tools; "
+      "it is sandboxed unless elevated is approved.",
+      command, {"command"}));
 
   Json::Value fetch(Json::objectValue);
   fetch["url"] = string_property("Public http/https URL");
   fetch["max_bytes"]["type"] = "integer";
   fetch["max_bytes"]["minimum"] = 1;
   fetch["max_bytes"]["maximum"] = 2097152;
-  tools.append(function_tool("fetch_http", "Fetch a public HTTP resource with SSRF and size protections.",
-                             fetch, {"url"}));
-  tools.append(function_tool("browse_page", "Open a public web page and return readable text.",
-                             fetch, {"url"}));
+  tools.append(function_tool(
+      "fetch_http",
+      "Fetch a public HTTP resource with SSRF and size protections. Use for information not "
+      "available in the workspace.",
+      fetch, {"url"}));
+  tools.append(function_tool(
+      "browse_page",
+      "Open a public web page and return readable text. Use for information not available in the workspace.",
+      fetch, {"url"}));
 
   Json::Value search(Json::objectValue);
   search["query"] = string_property("Web search query");

@@ -11,6 +11,7 @@ This file records user-visible changes to `ask`.
 - Added a structured compaction prompt with session metadata, tool context, previous-summary merge instructions, and explicit memory sections.
 - Added explicit agent tool-loop instructions and a global untrusted-data rule to the runtime permission block.
 - Added warnings for malformed or unknown prompt template syntax.
+- Added a fixed core instruction block at the front of every model system prompt with grounded-answer, tool-use, error-recovery, and output-format guidance.
 
 ### Changed
 
@@ -21,6 +22,8 @@ This file records user-visible changes to `ask`.
 - The Judge prompt explicitly rejects instructions found inside the quoted user prompt or assistant answer.
 - Gemini tool results resolve the function name from the matched tool call instead of assuming the call id is the function name.
 - Tool-round-limit responses are normalized into a final assistant message so no dangling tool call remains in history.
+- Historical compaction summaries are now injected as a single trusted context message instead of a fake user/assistant acknowledgement.
+- Tool schema descriptions now include decision guidance for when to use read-only, mutation, web, and permission-request tools.
 
 ## 0.5.0 - 2026-07-25
 

@@ -305,7 +305,9 @@ only the current conversation and survives save, explicit resume, and 10-second 
 does not alter global configuration or new conversations. Without an interactive stdin and stdout,
 permission requests are denied automatically.
 
-Every model request also receives an application-generated runtime permission block after the
+Every model request receives an application-generated core instruction block before the configured
+system prompt. It defines the assistant behavior contract: grounded answers, minimal tool use,
+tool error recovery, and concise final output. The runtime permission block is appended after the
 configured system prompt. Before elevation, it identifies `ASK_READ_ONLY`, lists the tools available
 now, lists the additional tools that full do mode would provide, and explains all three approval
 outcomes. Tool names are derived from the actual tool schemas for the current turn. The block also
