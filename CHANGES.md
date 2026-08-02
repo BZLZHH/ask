@@ -35,6 +35,7 @@ This file records user-visible changes to `ask`.
 - Compaction summaries are appended up to a token cap, then replaced, so the cached prefix remains reusable without allowing the summary to grow without bound.
 - Gemini cache metric parsing now falls back across common usage field names, and compaction explicitly asks the model not to repeat the previous summary verbatim.
 - The runtime permission block now travels as the final harness-generated message instead of living inside the system prompt, so permission state changes no longer invalidate the stable prompt and history cache prefix.
+- The Judge prompt is simpler and more explicit, and decision parsing now accepts common Chinese, bye/quit aliases, and explanatory phrases that still identify the final CONTINUE or EXIT decision.
 
 ## 0.5.0 - 2026-07-25
 
