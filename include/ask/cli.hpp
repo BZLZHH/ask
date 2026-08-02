@@ -20,6 +20,7 @@ struct CliOptions {
   bool conference{false};
   bool conference_resume{false};
   std::string conference_id;
+  std::string conference_type;
   std::string resume_id;
   std::string provider;
   std::string model;

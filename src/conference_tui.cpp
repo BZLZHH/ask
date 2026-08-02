@@ -110,8 +110,9 @@ void footer(const std::string& text) {
 void header(const Conference& conference) {
  erase();
  attron(COLOR_PAIR(1) | A_BOLD);
- const auto text = "AI Conference - " + conference.title + " - " + status_text(conference.status) +
- " - Round " + std::to_string(conference.round);
+ const auto text = "AI Conference - " + conference.title + " - [" +
+ conference_type_name(conference.type) + "] - " +
+ status_text(conference.status) + " - Round " + std::to_string(conference.round);
  mvaddnstr(0, 1, clipped(text, std::max(0, COLS - 2)).c_str(), std::max(0, COLS - 2));
  attroff(COLOR_PAIR(1) | A_BOLD);
  mvhline(1, 0, ACS_HLINE, COLS);
@@ -1077,7 +1078,8 @@ std::optional<std::string> Tui::choose_conference(ConferenceStore& store) {
  for (int index = 0; index < static_cast<int>(conferences.size()) && index + 3 < LINES - 1; ++index) {
  if (index == selected) attron(COLOR_PAIR(2));
  const auto& item = conferences[static_cast<std::size_t>(index)];
- const auto text = (index == selected ? "> " : " ") + status_text(item.status) + " " + item.title;
+ const auto text = (index == selected ? "> " : " ") + status_text(item.status) +
+ " [" + conference_type_name(item.type) + "] " + item.title;
  mvaddnstr(3 + index, 2, clipped(text, COLS - 4).c_str(), COLS - 4);
  if (index == selected) attroff(COLOR_PAIR(2));
  }

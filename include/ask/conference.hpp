@@ -24,6 +24,10 @@ enum class ConferenceStatus { draft, preparing, awaiting_setup, running, paused,
 
 enum class ConferenceDepth { quick, standard, deep, audit };
 
+enum class ConferenceType { advisory, deliverable };
+
+enum class TypeSource { explicit_selection, inferred };
+
 struct ConferenceParticipant {
   std::string id;
   int seat_number{0};
@@ -85,6 +89,8 @@ struct Conference {
   std::string id;
   std::string title;
   std::string goal;
+  ConferenceType type{ConferenceType::advisory};
+  TypeSource type_source{TypeSource::explicit_selection};
   std::string provider;
   std::string model;
   std::string cwd;
@@ -136,6 +142,10 @@ std::string conference_status_name(ConferenceStatus status);
 std::optional<ConferenceStatus> conference_status_from_name(const std::string& name);
 std::string conference_depth_name(ConferenceDepth depth);
 std::optional<ConferenceDepth> conference_depth_from_name(const std::string& name);
+std::string conference_type_name(ConferenceType type);
+std::optional<ConferenceType> conference_type_from_name(const std::string& name);
+std::string type_source_name(TypeSource source);
+std::optional<TypeSource> type_source_from_name(const std::string& name);
 Json::Value conference_to_json(const Conference& conference);
 std::optional<Conference> conference_from_json(const Json::Value& value);
 
@@ -165,7 +175,8 @@ class ConferenceEngine {
 
   static Conference create(const Config& config, const std::string& goal,
                            const std::filesystem::path& cwd,
-                           const std::string& provider = {}, const std::string& model = {});
+                           const std::string& provider = {}, const std::string& model = {},
+                           const std::string& type = {});
 
   const Conference& conference() const { return conference_; }
   Conference& conference() { return conference_; }

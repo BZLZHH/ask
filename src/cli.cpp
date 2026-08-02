@@ -297,6 +297,10 @@ CliOptions parse_cli(int argc, char** argv) {
  options.model = option_value(argc, argv, index, argument);
  } else if (!literal && argument.rfind("--model=", 0) == 0) {
  options.model = argument.substr(8);
+ } else if (!literal && argument == "--type") {
+ options.conference_type = option_value(argc, argv, index, argument);
+ } else if (!literal && argument.rfind("--type=", 0) == 0) {
+ options.conference_type = argument.substr(7);
  } else if (!literal && !argument.empty() && argument.front() == '-') {
  throw std::invalid_argument("unknown option: " + argument);
  } else {
@@ -339,11 +343,13 @@ std::string usage() {
  ask --config
  ask resume [session-id] [--provider ID] [--model MODEL]
  ask conference [goal] [--provider ID] [--model MODEL]
+ ask conference --type advisory|deliverable [goal] [--provider ID] [--model MODEL]
  ask conference resume [conference-id]
 
 Options:
  -p, --provider ID Override the configured provider for this session
  -m, --model MODEL Override the configured model for this session
+ --type Conference type: advisory (answer a question) or deliverable (produce artifacts)
  --do Start the session with full workspace tools enabled
  -i, --interactive Enter the REPL even when input was piped
  --no-repl Exit after one response
@@ -404,8 +410,12 @@ int run_cli(const CliOptions& options) {
  if (options.prompt.empty()) {
  throw std::runtime_error("conference requires a goal, or use conference resume");
  }
+ if (!options.conference_type.empty() &&
+ !ask::conference_type_from_name(options.conference_type)) {
+ throw std::invalid_argument("conference type must be advisory or deliverable");
+ }
  conference = ConferenceEngine::create(config, options.prompt, std::filesystem::current_path(),
- options.provider, options.model);
+ options.provider, options.model, options.conference_type);
  conferences.save(conference);
  }
  ConferenceEngine engine(config, std::move(conference), conferences);

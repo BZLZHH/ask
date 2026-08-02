@@ -238,13 +238,28 @@ void test_conferences(const std::filesystem::path& root) {
  config, "Choose a safe release plan", root, config.default_provider, config.default_model);
  expect(conference.status == ask::ConferenceStatus::awaiting_setup && conference.participants.size() == 4 &&
  conference.participants.front().kind == "moderator" &&
- conference.participants.front().seat_number == 0 && conference.agenda.size() == 4 &&
+ conference.participants.front().seat_number == 0 && conference.agenda.size() == 6 &&
+ conference.type == ask::ConferenceType::advisory &&
+ conference.agenda.front().id == "clarify" &&
  conference.setup.depth == ask::ConferenceDepth::standard && !conference.setup.user_approved,
  "conference creation initializes a reviewable numbered meeting plan");
+ auto deliverable_conference = ask::ConferenceEngine::create(
+ config, "implement a search feature", root, config.default_provider, config.default_model, "deliverable");
+ expect(deliverable_conference.type == ask::ConferenceType::deliverable &&
+ deliverable_conference.type_source == ask::TypeSource::explicit_selection &&
+ deliverable_conference.participants.size() == 5 &&
+ deliverable_conference.agenda.front().id == "requirements",
+ "deliverable conference uses execution-oriented seats and agenda");
+ auto inferred = ask::ConferenceEngine::create(
+ config, "explain a concept", root, config.default_provider, config.default_model);
+ expect(inferred.type == ask::ConferenceType::advisory &&
+ inferred.type_source == ask::TypeSource::inferred,
+ "conference type is inferred from the goal when not specified");
  store.save(conference);
  auto saved = store.load(conference.id);
  expect(saved && saved->goal == conference.goal && saved->rules == conference.rules &&
  saved->setup.depth == ask::ConferenceDepth::standard &&
+ saved->type == ask::ConferenceType::advisory &&
  saved->participants[1].provider == conference.participants[1].provider &&
  saved->participants[1].model == conference.participants[1].model,
  "conference plan and per-seat model bindings round trip through persistent storage");

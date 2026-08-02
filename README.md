@@ -173,7 +173,7 @@ Usage:
  ask --do [options] [prompt ...]
  ask --config
  ask resume [session-id] [--provider ID] [--model MODEL]
- ask conference [goal] [--provider ID] [--model MODEL]
+ ask conference [goal] [--type advisory|deliverable] [--provider ID] [--model MODEL]
  ask conference resume [conference-id]
 
 Options:
@@ -193,6 +193,8 @@ Options:
 ### AI Conference
 
 Run `ask conference "goal"` to open the dedicated multi-AI meeting TUI. It creates a moderator, expert, auditor, and recorder with a visible agenda and meeting rules. Use the arrow keys to move between agenda, discussion, controls, and input; `Enter` opens or executes the selected action; `Space` pauses or resumes; ordinary typed text plus `Enter` is a high-priority user interruption. Conference records are persisted separately from ordinary conversations and can be resumed with `ask conference resume`.
+
+Conferences have a type: `advisory` answers the original goal, while `deliverable` produces concrete artifacts and tracks verification. The default is `advisory`; use `ask conference --type deliverable "goal"` for execution-oriented meetings. The type is inferred when omitted and can be confirmed before the plan is approved.
 
 Meeting members use only read-only workspace tools by default while advancing a speaker. Every request and its result appears as a timeline event. Selecting `Run user-approved execution` or entering `/execute` presents a confirmation first; the approved speaker receives full tools for that one meeting turn only. The user may export the current structured summary with `/export [relative-path]`.
 

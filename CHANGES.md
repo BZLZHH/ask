@@ -43,6 +43,7 @@ This file records user-visible changes to `ask`.
 - Conference prompts now rely on append-only event history for facts, questions, and user-question state instead of rebuilding a large per-turn state message, which keeps the cached prefix stable across turns.
 - Meeting summaries are now concise structured summaries of goal, rules, decisions, actions, facts, open questions, agenda conclusions, and the moderator's final conclusion instead of dumping the full discussion timeline.
 - Completed conferences now generate a moderator executive summary that directly answers the original goal, with a deterministic fallback that filters out FACT/DECISION/ACTION-style labels.
+- Conferences now support an `advisory`/`deliverable` type mechanism: type inference, type-specific agenda and seats, type-aware prompts and summaries, CLI `--type`, persistence, and TUI type badges.
 
 ## 0.5.0 - 2026-07-25
 
