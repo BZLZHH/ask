@@ -44,6 +44,7 @@ This file records user-visible changes to `ask`.
 - Meeting summaries are now concise structured summaries of goal, rules, decisions, actions, facts, open questions, agenda conclusions, and the moderator's final conclusion instead of dumping the full discussion timeline.
 - Completed conferences now generate a moderator executive summary that directly answers the original goal, with a deterministic fallback that filters out FACT/DECISION/ACTION-style labels.
 - Conferences now support an `advisory`/`deliverable` type mechanism: type inference, type-specific agenda and seats, type-aware prompts and summaries, CLI `--type`, persistence, and TUI type badges.
+- Conference type completion gates are now enforced: advisory meetings require a `FINAL_ANSWER` and deliverable meetings require a verified artifact path or blocker before they can be marked complete. Structured final answers and deliverable records persist with the conference.
 
 ## 0.5.0 - 2026-07-25
 

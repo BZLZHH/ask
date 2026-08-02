@@ -388,6 +388,38 @@ void test_conferences(const std::filesystem::path& root) {
  expect(rejected_export, "conference export rejects paths outside the workspace");
  expect(!store.load("../../invalid") && !store.remove("../../invalid"),
  "conference store rejects path traversal identifiers");
+
+ auto advisory_conference = ask::ConferenceEngine::create(
+ config, "answer a question", root, config.default_provider, config.default_model);
+ ask::ConferenceEngine advisory_engine(config, std::move(advisory_conference), store);
+ advisory_engine.conclude();
+ expect(advisory_engine.conference().status != ask::ConferenceStatus::completed,
+ "advisory conference cannot conclude without a final answer");
+ advisory_engine.conference().final_answer = "The answer is A.";
+ advisory_engine.persist();
+ advisory_engine.conclude();
+ expect(advisory_engine.conference().status == ask::ConferenceStatus::completed,
+ "advisory conference concludes once a final answer exists");
+
+ auto type_deliverable_conference = ask::ConferenceEngine::create(
+ config, "implement a feature", root, config.default_provider, config.default_model, "deliverable");
+ ask::ConferenceEngine deliverable_engine(config, std::move(type_deliverable_conference), store);
+ deliverable_engine.conclude();
+ expect(deliverable_engine.conference().status != ask::ConferenceStatus::completed,
+ "deliverable conference cannot conclude without an artifact and verification");
+ deliverable_engine.conference().deliverables.push_back(
+ {"src/feature.cpp", "feature", "tests pass", "make test", ""});
+ deliverable_engine.persist();
+ deliverable_engine.conclude();
+ expect(deliverable_engine.conference().status == ask::ConferenceStatus::completed,
+ "deliverable conference concludes once a verified artifact exists");
+
+ auto typed_saved = store.load(deliverable_engine.conference().id);
+ expect(typed_saved && typed_saved->final_answer.empty() &&
+ typed_saved->deliverables.size() == 1 &&
+ typed_saved->deliverables.front().path == "src/feature.cpp" &&
+ typed_saved->type == ask::ConferenceType::deliverable,
+ "final answer and deliverable state round trip through conference storage");
  expect(store.remove(engine.conference().id), "conference can be removed");
 }
 

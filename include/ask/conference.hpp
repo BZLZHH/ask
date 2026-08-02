@@ -71,6 +71,14 @@ struct ConferenceUserQuestion {
   std::string answer;
 };
 
+struct DeliverableItem {
+  std::string path;
+  std::string description;
+  std::string acceptance;
+  std::string verification;
+  std::string blocker;
+};
+
 struct ConferenceEvent {
   std::string id;
   std::int64_t timestamp{0};
@@ -124,6 +132,8 @@ struct Conference {
   std::vector<std::string> decisions;
   std::vector<std::string> action_items;
   std::vector<ConferenceUserQuestion> user_questions;
+  std::string final_answer;
+  std::vector<DeliverableItem> deliverables;
   // A model-produced, auditable memory of older events. Events themselves
   // are never removed; this only controls what is sent to later requests.
   std::string context_summary;

@@ -211,6 +211,17 @@ Json::Value conference_to_json(const Conference& conference) {
  item["answer"] = question.answer;
  value["user_questions"].append(item);
  }
+ value["final_answer"] = conference.final_answer;
+ value["deliverables"] = Json::Value(Json::arrayValue);
+ for (const auto& item : conference.deliverables) {
+ Json::Value value_item(Json::objectValue);
+ value_item["path"] = item.path;
+ value_item["description"] = item.description;
+ value_item["acceptance"] = item.acceptance;
+ value_item["verification"] = item.verification;
+ value_item["blocker"] = item.blocker;
+ value["deliverables"].append(value_item);
+ }
  value["context_summary"] = conference.context_summary;
  value["compacted_until"] = Json::UInt64(conference.compacted_until);
  value["total_prompt_tokens"] = Json::Int64(conference.total_prompt_tokens);
@@ -318,6 +329,17 @@ std::optional<Conference> conference_from_json(const Json::Value& value) {
  strings_from_json(item["options"]), item.get("created_at", 0).asInt64(),
  item.get("expires_at", 0).asInt64(), item.get("status", "pending").asString(),
  item.get("answer", "").asString()});
+ }
+ }
+ conference.final_answer = value.get("final_answer", "").asString();
+ if (value["deliverables"].isArray()) {
+ for (const auto& item : value["deliverables"]) {
+ if (!item.isObject()) continue;
+ conference.deliverables.push_back({item.get("path", "").asString(),
+ item.get("description", "").asString(),
+ item.get("acceptance", "").asString(),
+ item.get("verification", "").asString(),
+ item.get("blocker", "").asString()});
  }
  }
  conference.context_summary = value.get("context_summary", "").asString();
@@ -1395,6 +1417,46 @@ void ConferenceEngine::absorb_structured_output(const ConferenceParticipant& par
  }
  return false;
  };
+ if (cleaned.rfind("FINAL_ANSWER:", 0) == 0) {
+ const auto answer = trim(cleaned.substr(std::string("FINAL_ANSWER:").size()));
+ if (!answer.empty()) conference_.final_answer = answer;
+ continue;
+ }
+ if (cleaned.rfind("DELIVERABLE_PATH:", 0) == 0) {
+ const auto path = trim(cleaned.substr(std::string("DELIVERABLE_PATH:").size()));
+ if (!path.empty()) {
+ if (conference_.deliverables.empty() || !conference_.deliverables.back().path.empty()) {
+ conference_.deliverables.push_back({"", "", "", "", ""});
+ }
+ conference_.deliverables.back().path = path;
+ }
+ continue;
+ }
+ if (cleaned.rfind("DELIVERABLE:", 0) == 0) {
+ if (conference_.deliverables.empty()) conference_.deliverables.push_back({"", "", "", "", ""});
+ conference_.deliverables.back().description = trim(cleaned.substr(std::string("DELIVERABLE:").size()));
+ continue;
+ }
+ if (cleaned.rfind("ACCEPTANCE:", 0) == 0) {
+ if (!conference_.deliverables.empty()) {
+ conference_.deliverables.back().acceptance =
+ trim(cleaned.substr(std::string("ACCEPTANCE:").size()));
+ }
+ continue;
+ }
+ if (cleaned.rfind("VERIFICATION:", 0) == 0) {
+ if (!conference_.deliverables.empty()) {
+ conference_.deliverables.back().verification =
+ trim(cleaned.substr(std::string("VERIFICATION:").size()));
+ }
+ continue;
+ }
+ if (cleaned.rfind("BLOCKER:", 0) == 0) {
+ if (!conference_.deliverables.empty()) {
+ conference_.deliverables.back().blocker = trim(cleaned.substr(std::string("BLOCKER:").size()));
+ }
+ continue;
+ }
  if (absorb("FACT:", conference_.facts) || absorb("QUESTION:", conference_.open_questions) ||
  absorb("DECISION:", conference_.decisions) || absorb("ACTION:", conference_.action_items)) continue;
  if (participant.kind != "moderator" && cleaned.rfind("SUGGEST_NEXT:", 0) == 0) {
@@ -1949,6 +2011,24 @@ void ConferenceEngine::mark_interrupted_event(std::size_t event_index, const std
 void ConferenceEngine::conclude() {
  std::lock_guard lock(mutex_);
  if (conference_.status == ConferenceStatus::completed || conference_.status == ConferenceStatus::stopped) return;
+ if (conference_.type == ConferenceType::advisory && trim(conference_.final_answer).empty()) {
+ record("conclusion_blocked", "System", "",
+ " conference FINAL_ANSWER； complete。");
+ persist();
+ return;
+ }
+ if (conference_.type == ConferenceType::deliverable) {
+ const bool has_delivery = std::any_of(conference_.deliverables.begin(), conference_.deliverables.end(),
+ [](const auto& item) {
+ return !item.path.empty() && (!item.verification.empty() || !item.blocker.empty());
+ });
+ if (!has_delivery) {
+ record("conclusion_blocked", "System", "",
+ " conference DELIVERABLE_PATH and Verification or Blockerevidence； complete。");
+ persist();
+ return;
+ }
+ }
  conference_.status = ConferenceStatus::concluding;
  record("system", "Moderator", "Moderator", "conference candidateconclusion、 and action items。");
  for (auto& agenda : conference_.agenda) {
@@ -2058,6 +2138,20 @@ std::string ConferenceEngine::build_summary() const {
  << "\nConference type：" << (conference_.type == ConferenceType::deliverable ? "deliverable（ ）"
  : "advisory（ ）")
  << "\nCurrent rules：" << conference_.rules;
+
+ if (conference_.type == ConferenceType::advisory && !trim(conference_.final_answer).empty()) {
+ output << "\n\nFinal answer：\n" << conference_.final_answer;
+ }
+ if (conference_.type == ConferenceType::deliverable && !conference_.deliverables.empty()) {
+ output << "\n\nDeliverables：";
+ for (const auto& item : conference_.deliverables) {
+ output << "\n- " << item.path;
+ if (!item.description.empty()) output << " | " << item.description;
+ if (!item.acceptance.empty()) output << " | Acceptance：" << item.acceptance;
+ if (!item.verification.empty()) output << " | Verification：" << item.verification;
+ if (!item.blocker.empty()) output << " | Blocker：" << item.blocker;
+ }
+ }
 
  if (!conference_.executive_summary.empty()) {
  output << "\n\n"
