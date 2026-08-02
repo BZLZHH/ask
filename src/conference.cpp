@@ -150,6 +150,7 @@ Json::Value conference_to_json(const Conference& conference) {
  value["return_to_moderator"] = conference.return_to_moderator;
  value["current_agenda_id"] = conference.current_agenda_id;
  value["rules"] = conference.rules;
+ value["executive_summary"] = conference.executive_summary;
  value["setup"]["version"] = conference.setup.version;
  value["setup"]["depth"] = conference_depth_name(conference.setup.depth);
  value["setup"]["suggested_advisor_count"] = conference.setup.suggested_advisor_count;
@@ -252,6 +253,7 @@ std::optional<Conference> conference_from_json(const Json::Value& value) {
  conference.return_to_moderator = value.get("return_to_moderator", false).asBool();
  conference.current_agenda_id = value.get("current_agenda_id", "").asString();
  conference.rules = value.get("rules", "").asString();
+ conference.executive_summary = value.get("executive_summary", "").asString();
  const auto setup_depth = conference_depth_from_name(value["setup"].get("depth", "standard").asString());
  conference.setup.version = std::max(1, value["setup"].get("version", 1).asInt());
  conference.setup.depth = setup_depth.value_or(ConferenceDepth::standard);
@@ -1857,7 +1859,92 @@ void ConferenceEngine::conclude() {
  persist();
 }
 
-std::string ConferenceEngine::summary() const {
+std::optional<std::string> ConferenceEngine::generate_executive_summary() {
+ ConferenceParticipant moderator;
+ std::ostringstream data;
+ {
+ std::lock_guard lock(mutex_);
+ const auto found = std::find_if(conference_.participants.begin(), conference_.participants.end(),
+ [](const auto& item) { return item.kind == "moderator" && item.enabled; });
+ if (found == conference_.participants.end()) return std::nullopt;
+ moderator = *found;
+ data << "original goal：\n" << conference_.goal
+ << "\n\nrules：\n" << conference_.rules;
+ const auto section = [&](const std::string& title, const std::vector<std::string>& values,
+ std::size_t maximum) {
+ data << "\n\n" << title << "：";
+ if (values.empty()) {
+ data << " ";
+ return;
+ }
+ std::size_t shown = 0;
+ for (const auto& value : values) {
+ if (shown >= maximum) break;
+ data << "\n- " << trim(value);
+ ++shown;
+ }
+ };
+ section("decisions", conference_.decisions, 20);
+ section("action items", conference_.action_items, 20);
+ section("confirmed facts", conference_.facts, 20);
+ section("Open questions", conference_.open_questions, 10);
+ data << "\n\nagenda conclusions：";
+ for (const auto& item : conference_.agenda) {
+ if (!item.conclusion.empty()) data << "\n- [" << item.title << "] " << trim(item.conclusion);
+ }
+ data << "\n\nUser ：";
+ for (const auto& question : conference_.user_questions) {
+ if (!question.answer.empty()) {
+ data << "\n- " << trim(question.question) << " => " << trim(question.answer);
+ }
+ }
+ if (!conference_.context_summary.empty()) {
+ data << "\n\n ：\n" << conference_.context_summary;
+ }
+ }
+ try {
+ auto settings = config_.settings;
+ settings.max_output_tokens = std::min(settings.max_output_tokens, 1200);
+ const auto response = client_.complete(
+ provider(moderator), moderator.model.empty() ? conference_.model : moderator.model,
+ {{"user", data.str(), {}, {}}},
+ " AI Conference Moderator。The conference has completed. 。Please directly using Conference goal，"
+ "Do not output FACT:/QUESTION:/DECISION:/ACTION:/NEXT_SPEAKER:/AGENDA: tags，"
+ "Do not recount the discussion process。must finalconclusion、 、confirmeddecisions、action items and risks 。"
+ "Output plain text，, no more than 800 words。",
+ settings, Json::Value(), 0);
+ const auto text = trim(response.content);
+ if (text.empty()) return std::nullopt;
+ std::lock_guard lock(mutex_);
+ conference_.executive_summary = text;
+ conference_.total_prompt_tokens += response.usage.prompt_tokens;
+ conference_.total_cached_tokens += response.usage.cached_tokens;
+ conference_.total_cache_creation_tokens += response.usage.cache_creation_tokens;
+ ++conference_.request_count;
+ conference_.last_prompt_tokens = response.usage.prompt_tokens;
+ conference_.last_cached_tokens = response.usage.cached_tokens;
+ conference_.last_cache_creation_tokens = response.usage.cache_creation_tokens;
+ record("executive_summary", "Moderator #0", "Moderator", "Moderator generated original goal finalconclusion。");
+ persist();
+ return text;
+ } catch (const std::exception&) {
+ return std::nullopt;
+ }
+}
+
+std::string ConferenceEngine::summary() {
+ bool needs_generation = false;
+ {
+ std::lock_guard lock(mutex_);
+ needs_generation = (conference_.status == ConferenceStatus::completed ||
+ conference_.status == ConferenceStatus::stopped) &&
+ conference_.executive_summary.empty();
+ }
+ if (needs_generation) (void)generate_executive_summary();
+ return build_summary();
+}
+
+std::string ConferenceEngine::build_summary() const {
  std::lock_guard lock(mutex_);
  std::ostringstream output;
  output << "Meeting Minutes\ngoal：" << conference_.goal
@@ -1865,6 +1952,9 @@ std::string ConferenceEngine::summary() const {
  << "\nRounds：" << conference_.round
  << "\nCurrent rules：" << conference_.rules;
 
+ if (!conference_.executive_summary.empty()) {
+ output << "\n\nModeratorfinalconclusion：\n" << conference_.executive_summary;
+ } else {
  const auto moderator = std::find_if(conference_.participants.begin(), conference_.participants.end(),
  [](const auto& participant) { return participant.kind == "moderator"; });
  const auto final_moderator = std::find_if(conference_.events.rbegin(), conference_.events.rend(),
@@ -1881,7 +1971,10 @@ std::string ConferenceEngine::summary() const {
  const auto directive = trim(line);
  if (directive.rfind("NEXT_SPEAKER:", 0) == 0 || directive.rfind("NEXT_PURPOSE:", 0) == 0 ||
  directive.rfind("AGENDA:", 0) == 0 || directive.rfind("AGENDA_CONCLUSION:", 0) == 0 ||
- directive.rfind("AUTOPILOT:", 0) == 0) continue;
+ directive.rfind("AUTOPILOT:", 0) == 0 || directive.rfind("FACT:", 0) == 0 ||
+ directive.rfind("QUESTION:", 0) == 0 || directive.rfind("DECISION:", 0) == 0 ||
+ directive.rfind("ACTION:", 0) == 0 || directive.rfind("SUGGEST_", 0) == 0 ||
+ directive.rfind("REQUEST_USER_", 0) == 0) continue;
  conclusion << "\n" << line;
  wrote_line = true;
  }
@@ -1889,6 +1982,7 @@ std::string ConferenceEngine::summary() const {
  auto text = conclusion.str();
  if (text.size() > 1200) text = text.substr(0, 1200) + "\n（ finalconclusion ）";
  output << "\n\nModeratorfinalconclusion：" << text;
+ }
  }
  }
 
@@ -1960,7 +2054,7 @@ std::string ConferenceEngine::summary() const {
  return output.str();
 }
 
-std::filesystem::path ConferenceEngine::export_summary(const std::string& requested_path) const {
+std::filesystem::path ConferenceEngine::export_summary(const std::string& requested_path) {
  std::lock_guard lock(mutex_);
  const auto root = conference_.cwd.empty() ? std::filesystem::current_path()
  : std::filesystem::path(conference_.cwd);

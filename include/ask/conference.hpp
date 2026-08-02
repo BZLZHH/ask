@@ -101,6 +101,7 @@ struct Conference {
   bool return_to_moderator{false};
   std::string current_agenda_id;
   std::string rules;
+  std::string executive_summary;
   ConferenceSetup setup;
   // Autopilot is opt-in. Selected tools are the only full-access tools that
   // automatic rounds may use; an empty list means read-only operation.
@@ -206,8 +207,8 @@ class ConferenceEngine {
                      bool stop_for_decisions = true);
   void run_autopilot();
   void conclude();
-  std::string summary() const;
-  std::filesystem::path export_summary(const std::string& path = {}) const;
+  std::string summary();
+  std::filesystem::path export_summary(const std::string& path = {});
 
  private:
   const Provider& provider(const ConferenceParticipant& participant) const;
@@ -216,6 +217,8 @@ class ConferenceEngine {
   std::vector<Message> prompt_messages(const ConferenceParticipant& participant, bool allow_write,
                                        bool autopilot) const;
   std::string system_prompt() const;
+  std::optional<std::string> generate_executive_summary();
+  std::string build_summary() const;
   Json::Value conference_tool_schemas(ToolExecutor::Access access,
                                       const std::set<std::string>& allowed_full_tools) const;
   std::string execute_subagent(const ConferenceParticipant& participant, const std::string& arguments,
