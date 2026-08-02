@@ -88,6 +88,10 @@ struct Session {
   std::int64_t updated_at{0};
   std::string summary;
   std::size_t active_from{0};
+  std::int64_t total_prompt_tokens{0};
+  std::int64_t total_cached_tokens{0};
+  std::int64_t total_cache_creation_tokens{0};
+  std::int64_t request_count{0};
   std::vector<Message> messages;
 };
 

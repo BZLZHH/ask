@@ -370,8 +370,11 @@ ChatResponse parse_gemini(const Json::Value& root) {
   response.usage.prompt_tokens = root["usageMetadata"].get("promptTokenCount", 0).asInt();
   response.usage.completion_tokens = root["usageMetadata"].get("candidatesTokenCount", 0).asInt();
   response.usage.total_tokens = root["usageMetadata"].get("totalTokenCount", 0).asInt();
-  response.usage.cached_tokens =
-      root["usageMetadata"].get("cachedContentTokenCount", 0).asInt();
+  const auto& gemini_usage = root["usageMetadata"];
+  response.usage.cached_tokens = gemini_usage.get("cachedContentTokenCount", 0).asInt();
+  if (response.usage.cached_tokens == 0) {
+    response.usage.cached_tokens = gemini_usage.get("cachedTokenCount", 0).asInt();
+  }
   response.raw = root;
   return response;
 }
@@ -771,9 +774,9 @@ ChatResponse ChatClient::stream(const Provider& provider,
             root["usageMetadata"].get("candidatesTokenCount", response.usage.completion_tokens).asInt();
         response.usage.total_tokens =
             root["usageMetadata"].get("totalTokenCount", response.usage.total_tokens).asInt();
-        response.usage.cached_tokens =
-            root["usageMetadata"].get("cachedContentTokenCount",
-                                      response.usage.cached_tokens).asInt();
+        int cached_tokens = root["usageMetadata"].get("cachedContentTokenCount", 0).asInt();
+        if (cached_tokens == 0) cached_tokens = root["usageMetadata"].get("cachedTokenCount", 0).asInt();
+        if (cached_tokens > 0) response.usage.cached_tokens = cached_tokens;
       }
       for (const auto& candidate : root["candidates"]) {
         if (candidate["finishReason"].isString()) response.finish_reason = candidate["finishReason"].asString();

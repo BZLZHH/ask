@@ -15,6 +15,8 @@ This file records user-visible changes to `ask`.
 - Added Anthropic prompt-caching `cache_control` breakpoints on the system prompt, first user message, and final message.
 - Added provider cache metric parsing for OpenAI cached tokens, Anthropic cache read/creation tokens, and Gemini cached content tokens.
 - Added a `!cache` REPL command and JSON usage fields that report provider cache utilization for the last request.
+- Added cumulative conversation cache statistics that persist with the session and are shown by `!cache`.
+- Added a local cacheable-prefix estimate fallback when a provider does not report cache metrics.
 
 ### Changed
 
@@ -31,6 +33,7 @@ This file records user-visible changes to `ask`.
 - The fixed agent-loop and untrusted-data rules moved into the stable core instruction prefix.
 - The runtime permission text stays stable when a request reaches the tool-round limit, avoiding an unnecessary cache miss on the final request.
 - Compaction summaries are appended up to a token cap, then replaced, so the cached prefix remains reusable without allowing the summary to grow without bound.
+- Gemini cache metric parsing now falls back across common usage field names, and compaction explicitly asks the model not to repeat the previous summary verbatim.
 
 ## 0.5.0 - 2026-07-25
 

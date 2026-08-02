@@ -228,7 +228,7 @@ When stdin and stdout are both terminals, the configured Conversation entry poli
 | `!model` | Switch the provider and model for the current session |
 | `!config` | Open configuration and then return to the current conversation |
 | `!compact` | Ask the current model to summarize older active context |
-| `!cache` | Show provider-reported cache utilization for the last request |
+| `!cache` | Show last-request and conversation-level cache utilization |
 | `!help` | Show REPL commands |
 | `!q` | Save and quit |
 
@@ -369,7 +369,7 @@ Before every request, `ask` estimates the size of:
 
 Token estimation is Unicode-aware and calibrated by model family, so CJK text, code, tool schemas, and protocol-specific message overhead do not all share the same rough byte-per-token ratio. When the prediction reaches the configured share of the model context window, `ask` asks the active model to create a structured working memory with session metadata and explicit instructions to merge any previous summary. The default threshold is 70%. The original transcript remains in SQLite; only the active API request view advances to the summary and recent turns.
 
-The prompt layout is cache-friendly: the fixed core instruction block and configured system prompt stay at the front, message history is append-only, and tool schemas keep a stable order for each access mode. The runtime permission text stays stable even when a request reaches the tool-round limit. Time template variables use the session start time rather than changing per request. Anthropic requests add `cache_control` breakpoints on the system prompt, the first user message, and the final message so provider-side prompt caching can reuse the stable prefix. Compaction summaries are appended up to a token cap, then replaced, so the cached prefix is reused without letting the summary grow without bound.
+The prompt layout is cache-friendly: the fixed core instruction block and configured system prompt stay at the front, message history is append-only, and tool schemas keep a stable order for each access mode. The runtime permission text stays stable even when a request reaches the tool-round limit. Time template variables use the session start time rather than changing per request. Anthropic requests add `cache_control` breakpoints on the system prompt, the first user message, and the final message so provider-side prompt caching can reuse the stable prefix. Compaction summaries are appended up to a token cap, then replaced, so the cached prefix is reused without letting the summary grow without bound. `!cache` reports last-request and cumulative conversation cache usage, with a local cacheable-prefix estimate when the provider does not return cache metrics.
 
 ## File Locations
 

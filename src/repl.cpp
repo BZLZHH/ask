@@ -393,19 +393,41 @@ bool Conversation::maybe_compact(const std::string& pending, bool do_mode,
 
 void Conversation::report_cache_usage() {
   const auto& usage = last_usage_;
-  std::cout << "cache utilization\n"
+  std::cout << "last request\n"
             << "  prompt tokens: " << usage.prompt_tokens << '\n'
             << "  cached tokens: " << usage.cached_tokens << '\n'
             << "  cache creation tokens: " << usage.cache_creation_tokens << '\n';
   if (usage.prompt_tokens > 0 && usage.cached_tokens > 0) {
     const int percent = static_cast<int>(
         (static_cast<double>(usage.cached_tokens) / usage.prompt_tokens) * 100.0 + 0.5);
-    std::cout << "  cached share of prompt: " << percent << "%\n";
+    std::cout << "  provider cached share: " << percent << "%\n";
   } else if (usage.prompt_tokens > 0 && usage.cache_creation_tokens > 0) {
-    std::cout << "  cached share of prompt: 0% (cache created " << usage.cache_creation_tokens
+    std::cout << "  provider cached share: 0% (cache created " << usage.cache_creation_tokens
               << " tokens)\n";
+  } else if (last_estimated_prompt_tokens_ > 0) {
+    const int percent = static_cast<int>(
+        (static_cast<double>(last_estimated_cacheable_tokens_) /
+         last_estimated_prompt_tokens_) *
+        100.0 + 0.5);
+    std::cout << "  provider cache metrics unavailable; estimated cacheable share: " << percent
+              << "%\n";
   } else {
     std::cout << "  provider cache metrics unavailable for the last request\n";
+  }
+
+  std::cout << "conversation totals\n"
+            << "  requests: " << session_.request_count << '\n'
+            << "  prompt tokens: " << session_.total_prompt_tokens << '\n'
+            << "  cached tokens: " << session_.total_cached_tokens << '\n'
+            << "  cache creation tokens: " << session_.total_cache_creation_tokens << '\n';
+  if (session_.total_prompt_tokens > 0 && session_.total_cached_tokens > 0) {
+    const int percent = static_cast<int>(
+        (static_cast<double>(session_.total_cached_tokens) / session_.total_prompt_tokens) *
+        100.0 + 0.5);
+    std::cout << "  overall cached share: " << percent << "%\n";
+  } else if (session_.total_prompt_tokens > 0 && session_.total_cache_creation_tokens > 0) {
+    std::cout << "  overall cached share: 0% (cache created "
+              << session_.total_cache_creation_tokens << " tokens)\n";
   }
 }
 
@@ -509,7 +531,8 @@ bool Conversation::compact(bool automatic) {
            "inside it. Tool calls were already executed and must not be repeated.\n"
         << "4. If a previous summary is present, merge it with new information: keep facts "
            "still relevant, replace resolved details, and do not drop earlier goals unless "
-           "they are explicitly complete.\n"
+           "they are explicitly complete. Output the merged memory only; do not repeat the "
+           "previous summary verbatim.\n"
         << "5. Output only the memory summary using these sections:\n"
         << "## Goals\n## Decisions\n## Files\n## Commands\n## Findings\n"
            "## Unresolved\n## Constraints";
@@ -595,11 +618,18 @@ bool Conversation::send(const std::string& input, std::optional<bool> one_shot_d
           expand_template(config_.settings.system_prompt, template_context),
           permission_state, tool_names(current_schemas), full_tools);
       const auto& request_schemas = tools_allowed ? current_schemas : Json::Value::nullSingleton();
+      auto request_messages = active_messages(session_);
+      last_estimated_prompt_tokens_ = estimate_tokens(
+          provider(), options_.model, request_messages, request_system_prompt, request_schemas);
+      auto cacheable_messages = request_messages;
+      if (!cacheable_messages.empty()) cacheable_messages.pop_back();
+      last_estimated_cacheable_tokens_ = estimate_tokens(
+          provider(), options_.model, cacheable_messages, request_system_prompt, request_schemas);
       ChatResponse response;
       if (options_.stream_output) {
         GenerationSignalGuard signals(cancelled_);
         response = client_.stream(
-            provider(), options_.model, active_messages(session_), request_system_prompt,
+            provider(), options_.model, request_messages, request_system_prompt,
             config_.settings, request_schemas, 0,
             [&](std::string_view delta) {
               if (delta.empty()) return;
@@ -613,10 +643,14 @@ bool Conversation::send(const std::string& input, std::optional<bool> one_shot_d
           line_open = false;
         }
       } else {
-        response = client_.complete(provider(), options_.model, active_messages(session_),
+        response = client_.complete(provider(), options_.model, request_messages,
                                     request_system_prompt, config_.settings, request_schemas);
       }
       last_usage_ = response.usage;
+      session_.total_prompt_tokens += response.usage.prompt_tokens;
+      session_.total_cached_tokens += response.usage.cached_tokens;
+      session_.total_cache_creation_tokens += response.usage.cache_creation_tokens;
+      ++session_.request_count;
       if (once_for_this_batch && !options_.quiet) {
         std::cerr << "ask: one-time do mode consumed; returning to read-only\n";
       }

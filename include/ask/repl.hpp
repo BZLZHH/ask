@@ -53,6 +53,8 @@ class Conversation {
   ChatClient client_;
   ToolExecutor tools_;
   Usage last_usage_;
+  std::size_t last_estimated_prompt_tokens_{0};
+  std::size_t last_estimated_cacheable_tokens_{0};
   volatile std::sig_atomic_t cancelled_{0};
 };
 

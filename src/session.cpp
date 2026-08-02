@@ -92,6 +92,10 @@ Json::Value session_to_json(const Session& session) {
   root["updated_at"] = Json::Int64(session.updated_at);
   root["summary"] = session.summary;
   root["active_from"] = Json::UInt64(session.active_from);
+  root["total_prompt_tokens"] = Json::Int64(session.total_prompt_tokens);
+  root["total_cached_tokens"] = Json::Int64(session.total_cached_tokens);
+  root["total_cache_creation_tokens"] = Json::Int64(session.total_cache_creation_tokens);
+  root["request_count"] = Json::Int64(session.request_count);
   Json::Value messages(Json::arrayValue);
   for (const auto& message : session.messages) {
     Json::Value item(Json::objectValue);
@@ -124,6 +128,10 @@ std::optional<Session> session_from_json(const Json::Value& root) {
   session.updated_at = root.get("updated_at", 0).asInt64();
   session.summary = root.get("summary", "").asString();
   session.active_from = static_cast<std::size_t>(root.get("active_from", 0).asUInt64());
+  session.total_prompt_tokens = root.get("total_prompt_tokens", 0).asInt64();
+  session.total_cached_tokens = root.get("total_cached_tokens", 0).asInt64();
+  session.total_cache_creation_tokens = root.get("total_cache_creation_tokens", 0).asInt64();
+  session.request_count = root.get("request_count", 0).asInt64();
   for (const auto& item : root["messages"]) {
     if (!item.isObject()) return std::nullopt;
     Message message;
@@ -241,7 +249,11 @@ void SessionStore::initialize() {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       summary TEXT NOT NULL DEFAULT '',
-      active_from INTEGER NOT NULL DEFAULT 0
+      active_from INTEGER NOT NULL DEFAULT 0,
+      total_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cached_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+      request_count INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -263,6 +275,17 @@ void SessionStore::initialize() {
   }
   // Older development databases predate active_from.
   sqlite3_exec(db_, "ALTER TABLE sessions ADD COLUMN active_from INTEGER NOT NULL DEFAULT 0",
+               nullptr, nullptr, nullptr);
+  sqlite3_exec(db_,
+               "ALTER TABLE sessions ADD COLUMN total_prompt_tokens INTEGER NOT NULL DEFAULT 0",
+               nullptr, nullptr, nullptr);
+  sqlite3_exec(db_,
+               "ALTER TABLE sessions ADD COLUMN total_cached_tokens INTEGER NOT NULL DEFAULT 0",
+               nullptr, nullptr, nullptr);
+  sqlite3_exec(db_,
+               "ALTER TABLE sessions ADD COLUMN total_cache_creation_tokens INTEGER NOT NULL DEFAULT 0",
+               nullptr, nullptr, nullptr);
+  sqlite3_exec(db_, "ALTER TABLE sessions ADD COLUMN request_count INTEGER NOT NULL DEFAULT 0",
                nullptr, nullptr, nullptr);
 }
 
@@ -288,11 +311,16 @@ void SessionStore::save(const Session& original) {
   check(db_, sqlite3_exec(db_, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr));
   try {
     Statement upsert(db_, R"SQL(
-      INSERT INTO sessions(id,title,provider,model,do_mode,cwd,created_at,updated_at,summary,active_from)
-      VALUES(?,?,?,?,?,?,?,?,?,?)
+      INSERT INTO sessions(id,title,provider,model,do_mode,cwd,created_at,updated_at,summary,active_from,
+                           total_prompt_tokens,total_cached_tokens,total_cache_creation_tokens,request_count)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET title=excluded.title, provider=excluded.provider,
         model=excluded.model, do_mode=excluded.do_mode, cwd=excluded.cwd,
-        updated_at=excluded.updated_at, summary=excluded.summary, active_from=excluded.active_from
+        updated_at=excluded.updated_at, summary=excluded.summary, active_from=excluded.active_from,
+        total_prompt_tokens=excluded.total_prompt_tokens,
+        total_cached_tokens=excluded.total_cached_tokens,
+        total_cache_creation_tokens=excluded.total_cache_creation_tokens,
+        request_count=excluded.request_count
     )SQL");
     auto* stmt = upsert.get();
     bind_text(db_, stmt, 1, session.id);
@@ -305,6 +333,10 @@ void SessionStore::save(const Session& original) {
     check(db_, sqlite3_bind_int64(stmt, 8, session.updated_at));
     bind_text(db_, stmt, 9, session.summary);
     check(db_, sqlite3_bind_int64(stmt, 10, static_cast<sqlite3_int64>(session.active_from)));
+    check(db_, sqlite3_bind_int64(stmt, 11, session.total_prompt_tokens));
+    check(db_, sqlite3_bind_int64(stmt, 12, session.total_cached_tokens));
+    check(db_, sqlite3_bind_int64(stmt, 13, session.total_cache_creation_tokens));
+    check(db_, sqlite3_bind_int64(stmt, 14, session.request_count));
     check(db_, sqlite3_step(stmt));
 
     Statement clear(db_, "DELETE FROM messages WHERE session_id=?");
@@ -336,7 +368,8 @@ void SessionStore::save(const Session& original) {
 
 std::optional<Session> SessionStore::load(const std::string& id) const {
   Statement query(db_, R"SQL(
-    SELECT id,title,provider,model,do_mode,cwd,created_at,updated_at,summary,active_from
+    SELECT id,title,provider,model,do_mode,cwd,created_at,updated_at,summary,active_from,
+           total_prompt_tokens,total_cached_tokens,total_cache_creation_tokens,request_count
     FROM sessions WHERE id=?
   )SQL");
   bind_text(db_, query.get(), 1, id);
@@ -352,6 +385,10 @@ std::optional<Session> SessionStore::load(const std::string& id) const {
   session.updated_at = sqlite3_column_int64(query.get(), 7);
   session.summary = column_text(query.get(), 8);
   session.active_from = static_cast<std::size_t>(sqlite3_column_int64(query.get(), 9));
+  session.total_prompt_tokens = sqlite3_column_int64(query.get(), 10);
+  session.total_cached_tokens = sqlite3_column_int64(query.get(), 11);
+  session.total_cache_creation_tokens = sqlite3_column_int64(query.get(), 12);
+  session.request_count = sqlite3_column_int64(query.get(), 13);
 
   Statement messages(db_, R"SQL(
     SELECT role,content,tool_call_id,tool_calls_json FROM messages
@@ -371,7 +408,8 @@ std::optional<Session> SessionStore::load(const std::string& id) const {
 
 std::vector<Session> SessionStore::list(std::size_t limit) const {
   Statement query(db_, R"SQL(
-    SELECT id,title,provider,model,do_mode,cwd,created_at,updated_at,summary,active_from
+    SELECT id,title,provider,model,do_mode,cwd,created_at,updated_at,summary,active_from,
+           total_prompt_tokens,total_cached_tokens,total_cache_creation_tokens,request_count
     FROM sessions ORDER BY updated_at DESC LIMIT ?
   )SQL");
   check(db_, sqlite3_bind_int64(query.get(), 1, static_cast<sqlite3_int64>(limit)));
@@ -388,6 +426,10 @@ std::vector<Session> SessionStore::list(std::size_t limit) const {
     session.updated_at = sqlite3_column_int64(query.get(), 7);
     session.summary = column_text(query.get(), 8);
     session.active_from = static_cast<std::size_t>(sqlite3_column_int64(query.get(), 9));
+    session.total_prompt_tokens = sqlite3_column_int64(query.get(), 10);
+    session.total_cached_tokens = sqlite3_column_int64(query.get(), 11);
+    session.total_cache_creation_tokens = sqlite3_column_int64(query.get(), 12);
+    session.request_count = sqlite3_column_int64(query.get(), 13);
     sessions.push_back(std::move(session));
   }
   return sessions;

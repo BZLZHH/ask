@@ -180,6 +180,10 @@ void test_sessions(const std::filesystem::path& root) {
   session.cwd = root.string();
   session.summary = "old facts";
   session.active_from = 1;
+  session.total_prompt_tokens = 120;
+  session.total_cached_tokens = 90;
+  session.total_cache_creation_tokens = 20;
+  session.request_count = 3;
   session.messages = {{"user", "hello", {}, {}},
                       {"assistant", "calling", {}, {{"call-1", "read_file", "{\"path\":\"a\"}"}}},
                       {"tool", "result", "call-1", {}}};
@@ -189,6 +193,9 @@ void test_sessions(const std::filesystem::path& root) {
   expect(loaded->messages.size() == 3, "all session messages round trip");
   expect(loaded->messages[1].tool_calls[0].name == "read_file", "tool calls round trip");
   expect(loaded->active_from == 1 && loaded->summary == "old facts", "compact view round trips");
+  expect(loaded->total_prompt_tokens == 120 && loaded->total_cached_tokens == 90 &&
+             loaded->total_cache_creation_tokens == 20 && loaded->request_count == 3,
+         "conversation cache statistics round trip");
   expect(!store.list().empty(), "session appears in listing");
   store.mark_quick_resume(session);
   struct stat quick_info {};

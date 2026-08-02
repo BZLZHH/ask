@@ -478,7 +478,9 @@ def exercise_repl(binary, root, env):
 
         terminal.send(b"!cache\n")
         cache = terminal.expect("ask> ")
-        assert b"cached share of prompt: 60%" in cache, cache
+        assert b"provider cached share: 60%" in cache, cache
+        assert b"conversation totals" in cache, cache
+        assert b"overall cached share: 60%" in cache, cache
 
         terminal.send(b"line one\\\n")
         terminal.expect("... ")
