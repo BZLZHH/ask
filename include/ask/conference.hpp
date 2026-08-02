@@ -121,6 +121,10 @@ struct Conference {
   // are never removed; this only controls what is sent to later requests.
   std::string context_summary;
   std::size_t compacted_until{0};
+  std::int64_t total_prompt_tokens{0};
+  std::int64_t total_cached_tokens{0};
+  std::int64_t total_cache_creation_tokens{0};
+  std::int64_t request_count{0};
   std::vector<ConferenceEvent> events;
 };
 

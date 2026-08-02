@@ -37,6 +37,7 @@ This file records user-visible changes to `ask`.
 - The runtime permission block now travels as the final harness-generated message instead of living inside the system prompt, so permission state changes no longer invalidate the stable prompt and history cache prefix.
 - The Judge prompt is simpler and more explicit, and decision parsing now accepts common Chinese, bye/quit aliases, and explanatory phrases that still identify the final CONTINUE or EXIT decision.
 - Conference prompts now include global untrusted-data rules, split meeting context into stable and per-turn messages for cache reuse, use token-based history compaction, and place moderator output contracts in a dedicated final section.
+- Conference now tracks cumulative provider cache usage and includes it in the exported meeting summary.
 
 ## 0.5.0 - 2026-07-25
 

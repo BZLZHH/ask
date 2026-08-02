@@ -182,6 +182,10 @@ Json::Value conference_to_json(const Conference& conference) {
  }
  value["context_summary"] = conference.context_summary;
  value["compacted_until"] = Json::UInt64(conference.compacted_until);
+ value["total_prompt_tokens"] = Json::Int64(conference.total_prompt_tokens);
+ value["total_cached_tokens"] = Json::Int64(conference.total_cached_tokens);
+ value["total_cache_creation_tokens"] = Json::Int64(conference.total_cache_creation_tokens);
+ value["request_count"] = Json::Int64(conference.request_count);
  value["participants"] = Json::Value(Json::arrayValue);
  for (const auto& participant : conference.participants) {
  Json::Value item(Json::objectValue);
@@ -279,6 +283,10 @@ std::optional<Conference> conference_from_json(const Json::Value& value) {
  }
  conference.context_summary = value.get("context_summary", "").asString();
  conference.compacted_until = static_cast<std::size_t>(value.get("compacted_until", 0).asUInt64());
+ conference.total_prompt_tokens = value.get("total_prompt_tokens", 0).asInt64();
+ conference.total_cached_tokens = value.get("total_cached_tokens", 0).asInt64();
+ conference.total_cache_creation_tokens = value.get("total_cache_creation_tokens", 0).asInt64();
+ conference.request_count = value.get("request_count", 0).asInt64();
  if (!value["participants"].isArray() || !value["agenda"].isArray() || !value["events"].isArray()) {
  return std::nullopt;
  }
@@ -532,6 +540,13 @@ void ConferenceEngine::generate_setup_with_moderator() {
  {{"user", instruction, {}, {}}},
  "Output a user-reviewable plain-text meeting organization plan; Markdown and internal reasoning are strictly forbidden.", settings,
  Json::Value(), 0);
+ {
+ std::lock_guard lock(mutex_);
+ conference_.total_prompt_tokens += response.usage.prompt_tokens;
+ conference_.total_cached_tokens += response.usage.cached_tokens;
+ conference_.total_cache_creation_tokens += response.usage.cache_creation_tokens;
+ ++conference_.request_count;
+ }
  const auto proposal = trim(response.content);
  if (proposal.empty()) throw std::runtime_error("moderator returned an empty meeting plan");
 
@@ -1032,6 +1047,10 @@ void ConferenceEngine::maybe_compact_history() {
  const auto compacted = trim(response.content);
  if (compacted.empty()) throw std::runtime_error("moderator returned an empty context summary");
  std::lock_guard lock(mutex_);
+ conference_.total_prompt_tokens += response.usage.prompt_tokens;
+ conference_.total_cached_tokens += response.usage.cached_tokens;
+ conference_.total_cache_creation_tokens += response.usage.cache_creation_tokens;
+ ++conference_.request_count;
  if (conference_.compacted_until != snapshot_for_compaction.compacted_until ||
  conference_.events.size() < cut) return;
  conference_.context_summary = compacted;
@@ -1228,6 +1247,10 @@ std::string ConferenceEngine::execute_subagent(
  contribution = event.content;
  event.state = cancelled ? "interrupted" : "completed";
  if (!response.finish_reason.empty()) event.detail += "\nfinish_reason: " + response.finish_reason;
+ conference_.total_prompt_tokens += response.usage.prompt_tokens;
+ conference_.total_cached_tokens += response.usage.cached_tokens;
+ conference_.total_cache_creation_tokens += response.usage.cache_creation_tokens;
+ ++conference_.request_count;
  }
  persist();
  if (cancelled) {
@@ -1543,6 +1566,10 @@ void ConferenceEngine::advance_with_policy(bool allow_write,
  streamed_event.detail = "finish_reason: " + response.finish_reason;
  }
  }
+ conference_.total_prompt_tokens += response.usage.prompt_tokens;
+ conference_.total_cached_tokens += response.usage.cached_tokens;
+ conference_.total_cache_creation_tokens += response.usage.cache_creation_tokens;
+ ++conference_.request_count;
  if (streamed_event.content.empty() && !response.tool_calls.empty()) {
  streamed_event.content = "（contribution converted for toolrequest）";
  }
@@ -1668,6 +1695,10 @@ void ConferenceEngine::advance_with_policy(bool allow_write,
  if (final_event.content.empty()) final_event.content = response.content;
  if (final_cancelled) mark_interrupted_event(final_event_index, "User interjection");
  else final_event.state = "completed";
+ conference_.total_prompt_tokens += response.usage.prompt_tokens;
+ conference_.total_cached_tokens += response.usage.cached_tokens;
+ conference_.total_cache_creation_tokens += response.usage.cache_creation_tokens;
+ ++conference_.request_count;
  }
  persist();
  if (final_cancelled) throw RequestCancelled();
@@ -1836,6 +1867,10 @@ std::string ConferenceEngine::summary() const {
  std::ostringstream output;
  output << "goal：" << conference_.goal << "\nStatus：" << conference_status_name(conference_.status)
  << "\nRounds：" << conference_.round;
+ output << "\ncache usage: prompt " << conference_.total_prompt_tokens
+ << ", cached " << conference_.total_cached_tokens
+ << ", created " << conference_.total_cache_creation_tokens
+ << ", requests " << conference_.request_count;
  const auto moderator = std::find_if(conference_.participants.begin(), conference_.participants.end(),
  [](const auto& participant) { return participant.kind == "moderator"; });
  const auto final_moderator = std::find_if(conference_.events.rbegin(), conference_.events.rend(),
