@@ -269,7 +269,8 @@ ToolExecutor::ToolExecutor(std::filesystem::path root, Approval approval)
   if (!std::filesystem::is_directory(root_)) throw std::runtime_error("tool root is not a directory");
 }
 
-Json::Value ToolExecutor::schemas(Access access, bool allow_escalation) const {
+Json::Value ToolExecutor::schemas(Access access, bool allow_escalation,
+                                  const std::set<std::string>& allowed_full_tools) const {
   Json::Value tools(Json::arrayValue);
   Json::Value read(Json::objectValue);
   read["path"] = string_property("UTF-8 file path relative to the workspace");
@@ -363,14 +364,19 @@ Json::Value ToolExecutor::schemas(Access access, bool allow_escalation) const {
     return tools;
   }
 
+  const auto full_tool_allowed = [&](const std::string& name) {
+    return allowed_full_tools.empty() || allowed_full_tools.contains(name);
+  };
   Json::Value write(Json::objectValue);
   write["path"] = string_property("File path relative to the workspace");
   write["content"] = string_property("Exact content to write");
   write["append"]["type"] = "boolean";
-  tools.append(function_tool(
-      "write_file",
-      "Write or append a file inside the workspace. Use only for creating or modifying workspace files.",
-      write, {"path", "content"}));
+  if (full_tool_allowed("write_file")) {
+    tools.append(function_tool(
+        "write_file",
+        "Write or append a file inside the workspace. Use only for creating or modifying workspace files.",
+        write, {"path", "content"}));
+  }
 
   Json::Value command(Json::objectValue);
   command["command"] = string_property("Shell command to execute");
@@ -381,31 +387,39 @@ Json::Value ToolExecutor::schemas(Access access, bool allow_escalation) const {
   command["elevated"]["description"] =
       "Request one-time user approval to run outside the workspace sandbox, still as the current user";
   command["reason"] = string_property("Why running outside the workspace sandbox is necessary");
-  tools.append(function_tool(
-      "run_command",
-      "Run a command in the sandbox. Use for mutation or commands not covered by read-only tools; "
-      "it is sandboxed unless elevated is approved.",
-      command, {"command"}));
+  if (full_tool_allowed("run_command")) {
+    tools.append(function_tool(
+        "run_command",
+        "Run a command in the sandbox. Use for mutation or commands not covered by read-only tools; "
+        "it is sandboxed unless elevated is approved.",
+        command, {"command"}));
+  }
 
   Json::Value fetch(Json::objectValue);
   fetch["url"] = string_property("Public http/https URL");
   fetch["max_bytes"]["type"] = "integer";
   fetch["max_bytes"]["minimum"] = 1;
   fetch["max_bytes"]["maximum"] = 2097152;
-  tools.append(function_tool(
-      "fetch_http",
-      "Fetch a public HTTP resource with SSRF and size protections. Use for information not "
-      "available in the workspace.",
-      fetch, {"url"}));
-  tools.append(function_tool(
-      "browse_page",
-      "Open a public web page and return readable text. Use for information not available in the workspace.",
-      fetch, {"url"}));
+  if (full_tool_allowed("fetch_http")) {
+    tools.append(function_tool(
+        "fetch_http",
+        "Fetch a public HTTP resource with SSRF and size protections. Use for information not "
+        "available in the workspace.",
+        fetch, {"url"}));
+  }
+  if (full_tool_allowed("browse_page")) {
+    tools.append(function_tool(
+        "browse_page",
+        "Open a public web page and return readable text. Use for information not available in the workspace.",
+        fetch, {"url"}));
+  }
 
   Json::Value search(Json::objectValue);
   search["query"] = string_property("Web search query");
-  tools.append(function_tool("web_search", "Search the public web and return text results.", search,
-                             {"query"}));
+  if (full_tool_allowed("web_search")) {
+    tools.append(function_tool("web_search", "Search the public web and return text results.", search,
+                               {"query"}));
+  }
   return tools;
 }
 
@@ -425,7 +439,8 @@ std::filesystem::path ToolExecutor::checked_path(const std::string& input, bool 
 }
 
 std::string ToolExecutor::execute(const std::string& name, const std::string& arguments,
-                                  Access access) {
+                                  Access access, const std::set<std::string>& allowed_full_tools,
+                                  bool allow_elevation) {
   try {
     const auto args = parse_arguments(arguments);
     if (name == "read_file") return read_file(args);
@@ -438,6 +453,13 @@ std::string ToolExecutor::execute(const std::string& name, const std::string& ar
     if (name == "run_readonly_command") return run_readonly_command(args);
     if (access == Access::read_only) {
       return json_string(error_result("tool requires do mode: " + name));
+    }
+    const auto full_tool_allowed = allowed_full_tools.empty() || allowed_full_tools.contains(name);
+    if (!full_tool_allowed) {
+      return json_string(error_result("tool is not preauthorized for this operation: " + name));
+    }
+    if (name == "run_command" && args.get("elevated", false).asBool() && !allow_elevation) {
+      return json_string(error_result("elevated command is not available during automatic operation"));
     }
     if (name == "write_file") return write_file(args);
     if (name == "run_command") return run_command(args);

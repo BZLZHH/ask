@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <set>
 #include <string>
 
 #include <json/json.h>
@@ -22,9 +23,14 @@ class ToolExecutor {
 
   explicit ToolExecutor(std::filesystem::path root, Approval approval = {});
 
-  Json::Value schemas(Access access = Access::full, bool allow_escalation = true) const;
+  // A non-empty allowed_full_tools set is an enforced allowlist for tools that
+  // require full access. Read-only tools remain available.
+  Json::Value schemas(Access access = Access::full, bool allow_escalation = true,
+                      const std::set<std::string>& allowed_full_tools = {}) const;
   std::string execute(const std::string& name, const std::string& arguments,
-                      Access access = Access::full);
+                      Access access = Access::full,
+                      const std::set<std::string>& allowed_full_tools = {},
+                      bool allow_elevation = true);
   const std::filesystem::path& root() const { return root_; }
 
   static CommandResult run_process(const std::string& command,

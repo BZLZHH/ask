@@ -23,6 +23,14 @@ Current version: `0.6.0`
 - Approve one exact command to run outside the workspace sandbox as the current user.
 - Automatically compact active context at 70% of the configured context window while retaining the original transcript.
 - Use stdin, stdout redirection, pipelines, and structured JSON output in scripts.
+- Run an independent keyboard-first multi-AI Conference with agendas, roles, interruption, visible tool evidence, persisted meeting records, and moderator autopilot.
+
+## Design Documents
+
+- [ （ ）](docs/QUICKSTART.zh-CN.md)： 、configuration through Ordinary 、Do and AI Conference task 。
+- [AI Conference ](docs/AI_CONFERENCE.md)： AI conference 、conference 、TUI、 、tool authorization and data 。
+
+AI Conference Moderator advance default 。 conference `Configure autopilot permissions` or `/autopilot`， advance or 4/8/12/20 Rounds， authorization `write_file`、 `run_command`、`fetch_http`、`browse_page` or `web_search`。 through Moderator requestUserdecided、completeconference、User or ； depth Moderator check ， ENDconference。 using tool； ，User 、 or authorization 。
 
 ## Provider Protocols
 
@@ -49,14 +57,14 @@ Fedora:
 
 ```sh
 sudo dnf install gcc-c++ cmake ninja-build pkgconf-pkg-config \
-  libcurl-devel jsoncpp-devel sqlite-devel ncurses-devel libedit-devel bubblewrap
+ libcurl-devel jsoncpp-devel sqlite-devel ncurses-devel libedit-devel bubblewrap
 ```
 
 Debian or Ubuntu:
 
 ```sh
 sudo apt install build-essential cmake ninja-build pkg-config \
-  libcurl4-openssl-dev libjsoncpp-dev libsqlite3-dev libncursesw5-dev libedit-dev bubblewrap
+ libcurl4-openssl-dev libjsoncpp-dev libsqlite3-dev libncursesw5-dev libedit-dev bubblewrap
 ```
 
 Arch Linux:
@@ -161,24 +169,32 @@ Available conditions are `do_mode`, `read_only`, `has_tools`, and `streaming`, p
 
 ```text
 Usage:
-  ask [options] [prompt ...]
-  ask --do [options] [prompt ...]
-  ask --config
-  ask resume [session-id] [--provider ID] [--model MODEL]
+ ask [options] [prompt ...]
+ ask --do [options] [prompt ...]
+ ask --config
+ ask resume [session-id] [--provider ID] [--model MODEL]
+ ask conference [goal] [--provider ID] [--model MODEL]
+ ask conference resume [conference-id]
 
 Options:
-  -p, --provider ID    Override the provider for this session
-  -m, --model MODEL    Override the model for this session
-      --do             Start with workspace tools enabled
-  -i, --interactive    Enter the REPL even when input was piped
-      --no-repl        Exit after one response
-      --no-stream      Wait for the complete response before printing
-      --json           Emit one JSON object and disable streaming
-  -q, --quiet          Hide tool progress messages
-      --config         Open the settings TUI
-  -h, --help           Show help
-      --version        Show the version
+ -p, --provider ID Override the provider for this session
+ -m, --model MODEL Override the model for this session
+ --do Start with workspace tools enabled
+ -i, --interactive Enter the REPL even when input was piped
+ --no-repl Exit after one response
+ --no-stream Wait for the complete response before printing
+ --json Emit one JSON object and disable streaming
+ -q, --quiet Hide tool progress messages
+ --config Open the settings TUI
+ -h, --help Show help
+ --version Show the version
 ```
+
+### AI Conference
+
+Run `ask conference "goal"` to open the dedicated multi-AI meeting TUI. It creates a moderator, expert, auditor, and recorder with a visible agenda and meeting rules. Use the arrow keys to move between agenda, discussion, controls, and input; `Enter` opens or executes the selected action; `Space` pauses or resumes; ordinary typed text plus `Enter` is a high-priority user interruption. Conference records are persisted separately from ordinary conversations and can be resumed with `ask conference resume`.
+
+Meeting members use only read-only workspace tools by default while advancing a speaker. Every request and its result appears as a timeline event. Selecting `Run user-approved execution` or entering `/execute` presents a confirmation first; the approved speaker receives full tools for that one meeting turn only. The user may export the current structured summary with `/export [relative-path]`.
 
 Examples:
 
@@ -266,18 +282,18 @@ JSON output has this shape:
 
 ```json
 {
-  "session": "20260719-120000-abcdef",
-  "provider": "deepseek",
-  "model": "deepseek-v4-flash",
-  "text": "...",
-  "finish_reason": "stop",
-  "usage": {
-    "prompt_tokens": 42,
-    "completion_tokens": 18,
-    "total_tokens": 60,
-    "cached_tokens": 36,
-    "cache_creation_tokens": 12
-  }
+ "session": "20260719-120000-abcdef",
+ "provider": "deepseek",
+ "model": "deepseek-v4-flash",
+ "text": "...",
+ "finish_reason": "stop",
+ "usage": {
+ "prompt_tokens": 42,
+ "completion_tokens": 18,
+ "total_tokens": 60,
+ "cached_tokens": 36,
+ "cache_creation_tokens": 12
+ }
 }
 ```
 

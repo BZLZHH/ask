@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(GNUInstallDirs)
 find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 pkg_check_modules(JSONCPP REQUIRED IMPORTED_TARGET jsoncpp)
 pkg_check_modules(SQLITE REQUIRED IMPORTED_TARGET sqlite3)
@@ -17,6 +18,8 @@ add_library(ask_core
   src/config.cpp
   src/http.cpp
   src/session.cpp
+  src/conference.cpp
+  src/conference_tui.cpp
   src/client.cpp
   src/tools.cpp
   src/prompt_template.cpp
@@ -33,6 +36,7 @@ target_link_libraries(ask_core
     PkgConfig::SQLITE
     PkgConfig::NCURSES
     PkgConfig::LIBEDIT
+    Threads::Threads
 )
 target_compile_options(ask_core PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(ask_core PUBLIC ASK_VERSION="${PROJECT_VERSION}")
@@ -42,6 +46,8 @@ target_link_libraries(ask PRIVATE ask_core)
 
 install(TARGETS ask RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES README.md CHANGES.md LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
+install(FILES docs/AI_CONFERENCE.md docs/AI_CONFERENCE_GUIDE.md docs/QUICKSTART.zh-CN.md
+        DESTINATION ${CMAKE_INSTALL_DOCDIR}/docs)
 
 include(CTest)
 if(BUILD_TESTING)
