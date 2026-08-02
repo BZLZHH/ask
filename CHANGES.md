@@ -39,6 +39,7 @@ This file records user-visible changes to `ask`.
 - Conference prompts now include global untrusted-data rules, use a stable system prompt across all speakers, keep role/permission/autopilot details in the final per-turn message, order event history before dynamic state for cache reuse, use token-based history compaction, and place output contracts in a dedicated final section.
 - Conference now tracks cumulative provider cache usage and includes it in the exported meeting summary.
 - Conference TUI now shows a status line with token, cache, request, and model information.
+- Conference cache reporting now distinguishes the last-request hit ratio from cumulative totals, and stable prompt sections absorb the shared meeting/role instructions to reduce the per-turn dynamic tail.
 
 ## 0.5.0 - 2026-07-25
 

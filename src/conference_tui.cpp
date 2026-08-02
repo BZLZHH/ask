@@ -130,10 +130,17 @@ void header(const Conference& conference) {
  "/" + std::to_string(conference.setup.agenda_turn_budget) +
  " (checkpoint)";
  mvaddnstr(3, 1, clipped(schedule, std::max(0, COLS - 2)).c_str(), std::max(0, COLS - 2));
- const auto usage = "Tokens: prompt " + std::to_string(conference.total_prompt_tokens) +
- " | cached " + std::to_string(conference.total_cached_tokens) +
- " | created " + std::to_string(conference.total_cache_creation_tokens) +
- " | requests " + std::to_string(conference.request_count) +
+ std::string usage = "Last: prompt " + std::to_string(conference.last_prompt_tokens) +
+ " cached " + std::to_string(conference.last_cached_tokens);
+ if (conference.last_prompt_tokens > 0) {
+ const int percent = static_cast<int>(
+ (static_cast<double>(conference.last_cached_tokens) / conference.last_prompt_tokens) *
+ 100.0 + 0.5);
+ usage += " (" + std::to_string(percent) + "%)";
+ }
+ usage += " | Total: prompt " + std::to_string(conference.total_prompt_tokens) +
+ " cached " + std::to_string(conference.total_cached_tokens) +
+ " requests " + std::to_string(conference.request_count) +
  " | Model: " + conference.model;
  attron(A_DIM);
  mvaddnstr(4, 1, clipped(usage, std::max(0, COLS - 2)).c_str(), std::max(0, COLS - 2));
