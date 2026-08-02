@@ -643,8 +643,12 @@ def assert_judge_request(request, original_prompt):
     assert body["messages"][0]["content"].startswith(
         "You classify whether a terminal user"
     ), body
-    assert "Output plain text only: no Markdown" in body["messages"][0]["content"], body
+    assert "When uncertain, prefer CONTINUE" in body["messages"][0]["content"], body
+    assert "Output exactly one token: CONTINUE or EXIT" in body["messages"][0]["content"], body
     assert body["messages"][1]["role"] == "user", body
+    assert "<conversation_context>" in body["messages"][1]["content"], body
+    assert "mode: read-only" in body["messages"][1]["content"], body
+    assert "tool_calls_used: no" in body["messages"][1]["content"], body
     assert original_prompt in body["messages"][1]["content"], body
     assert "echo: " + original_prompt in body["messages"][1]["content"], body
 

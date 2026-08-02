@@ -14,6 +14,7 @@ This file records user-visible changes to `ask`.
 
 - System prompt templates are expanded before the runtime permission block is appended; existing plain-text prompts remain unchanged.
 - Compaction transcripts now distinguish user messages, assistant tool calls, and tool results instead of flattening every message into the same role line.
+- The Judge prompt now receives conversation metadata and an explicit conservative decision rubric, so it exits only when the exchange is confidently complete and otherwise prefers continuing.
 
 ## 0.5.0 - 2026-07-25
 
