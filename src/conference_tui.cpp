@@ -980,7 +980,9 @@ void draw(const Conference& conference, Focus focus, int agenda_selected, int ev
  if (focus == Focus::input) attron(A_REVERSE);
  mvaddnstr(input_row, 1, std::string(static_cast<std::size_t>(std::max(0, COLS - 2)), ' ').c_str(), std::max(0, COLS - 2));
  const auto text = input.empty()
- ? (pending_user_question(conference) ? "Enter answer to moderator question or /command" : "Enter an interruption or /command")
+ ? (conference.status == ConferenceStatus::awaiting_user && pending_user_question(conference)
+ ? "Enter answer to moderator question or /command"
+ : "Enter an interruption or /command")
  : input;
  mvaddnstr(input_row, 1, clipped(text, std::max(0, COLS - 2)).c_str(), std::max(0, COLS - 2));
  if (focus == Focus::input) attroff(A_REVERSE);
