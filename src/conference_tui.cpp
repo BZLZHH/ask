@@ -130,7 +130,15 @@ void header(const Conference& conference) {
  "/" + std::to_string(conference.setup.agenda_turn_budget) +
  " (checkpoint)";
  mvaddnstr(3, 1, clipped(schedule, std::max(0, COLS - 2)).c_str(), std::max(0, COLS - 2));
- mvhline(4, 0, ACS_HLINE, COLS);
+ const auto usage = "Tokens: prompt " + std::to_string(conference.total_prompt_tokens) +
+ " | cached " + std::to_string(conference.total_cached_tokens) +
+ " | created " + std::to_string(conference.total_cache_creation_tokens) +
+ " | requests " + std::to_string(conference.request_count) +
+ " | Model: " + conference.model;
+ attron(A_DIM);
+ mvaddnstr(4, 1, clipped(usage, std::max(0, COLS - 2)).c_str(), std::max(0, COLS - 2));
+ attroff(A_DIM);
+ mvhline(5, 0, ACS_HLINE, COLS);
 }
 
 void section(int row, int col, int width, const std::string& text, bool focused) {
@@ -840,7 +848,7 @@ void draw(const Conference& conference, Focus focus, int agenda_selected, int ev
  bool follow_live) {
  header(conference);
  const int input_row = LINES - 3;
- const int top = 5;
+ const int top = 6;
  const int discussion_rows = std::max(1, input_row - top - 3);
  const int left_width = std::clamp(COLS / 4, 25, 36);
  const int right_width = std::clamp(COLS / 5, 22, 31);
