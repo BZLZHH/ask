@@ -210,9 +210,9 @@ class ConferenceEngine {
   const Provider& provider(const ConferenceParticipant& participant) const;
   ConferenceParticipant& next_enabled_participant();
   ConferenceParticipant* find_participant(const std::string& id);
-  std::vector<Message> prompt_messages(const ConferenceParticipant& participant) const;
-  std::string system_prompt(const ConferenceParticipant& participant, bool allow_write,
-                            bool autopilot = false) const;
+  std::vector<Message> prompt_messages(const ConferenceParticipant& participant, bool allow_write,
+                                       bool autopilot) const;
+  std::string system_prompt() const;
   Json::Value conference_tool_schemas(ToolExecutor::Access access,
                                       const std::set<std::string>& allowed_full_tools) const;
   std::string execute_subagent(const ConferenceParticipant& participant, const std::string& arguments,
