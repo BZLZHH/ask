@@ -9,12 +9,18 @@ This file records user-visible changes to `ask`.
 - Added a small system prompt template layer with `{{variable}}` substitution, `{{#if}}`/`{{#unless}}` conditionals, provider/protocol/model keyed conditions, and template escaping.
 - Added a Unicode-aware token estimator calibrated by model family and protocol-specific message overhead for more accurate compaction decisions.
 - Added a structured compaction prompt with session metadata, tool context, previous-summary merge instructions, and explicit memory sections.
+- Added explicit agent tool-loop instructions and a global untrusted-data rule to the runtime permission block.
+- Added warnings for malformed or unknown prompt template syntax.
 
 ### Changed
 
 - System prompt templates are expanded before the runtime permission block is appended; existing plain-text prompts remain unchanged.
 - Compaction transcripts now distinguish user messages, assistant tool calls, and tool results instead of flattening every message into the same role line.
 - The Judge prompt now receives conversation metadata and an explicit conservative decision rubric, so it exits only when the exchange is confidently complete and otherwise prefers continuing.
+- Runtime permission tool lists are now derived from tool schemas instead of hardcoded names.
+- The Judge prompt explicitly rejects instructions found inside the quoted user prompt or assistant answer.
+- Gemini tool results resolve the function name from the matched tool call instead of assuming the call id is the function name.
+- Tool-round-limit responses are normalized into a final assistant message so no dangling tool call remains in history.
 
 ## 0.5.0 - 2026-07-25
 

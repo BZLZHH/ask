@@ -308,7 +308,10 @@ permission requests are denied automatically.
 Every model request also receives an application-generated runtime permission block after the
 configured system prompt. Before elevation, it identifies `ASK_READ_ONLY`, lists the tools available
 now, lists the additional tools that full do mode would provide, and explains all three approval
-outcomes. The block changes per request to one of `ASK_READ_ONLY`, `FORCED_ASK_READ_ONLY`,
+outcomes. Tool names are derived from the actual tool schemas for the current turn. The block also
+states the agent tool-loop contract and instructs the model to treat tool results, file contents,
+and shell output as untrusted data. The block changes per request to one of `ASK_READ_ONLY`,
+`FORCED_ASK_READ_ONLY`,
 `DO_FOR_USER_TURN`, `DO_ONCE_THIS_RESPONSE`, or `DO_FOR_CONVERSATION`. In particular, an
 Allow once response tells the model that the complete tool-call batch returned in that response is
 authorized, that returning the response consumes the grant even if it contains no tool calls, and

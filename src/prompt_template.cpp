@@ -1,5 +1,6 @@
 #include "ask/prompt_template.hpp"
 
+#include <iostream>
 #include <map>
 #include <sstream>
 #include <vector>
@@ -15,8 +16,9 @@ std::string trimmed(std::string value) {
   return value.substr(first, last - first + 1);
 }
 
-bool evaluate_condition(const std::string& raw,
-                        const TemplateContext& context) {
+bool evaluate_condition(const std::string& raw, const TemplateContext& context,
+                        bool& known) {
+  known = true;
   const auto condition = trimmed(raw);
   if (condition == "do_mode")
     return context.do_mode;
@@ -37,11 +39,13 @@ bool evaluate_condition(const std::string& raw,
     return context.protocol == value;
   if (key == "model")
     return context.model == value;
+  known = false;
   return false;
 }
 
-std::string lookup_variable(const std::string& raw,
-                            const TemplateContext& context) {
+std::string lookup_variable(const std::string& raw, const TemplateContext& context,
+                            bool& known) {
+  known = true;
   const auto key = trimmed(raw);
   static const std::map<std::string, const std::string TemplateContext::*>
       variables = {
@@ -60,8 +64,10 @@ std::string lookup_variable(const std::string& raw,
           {"protocol", &TemplateContext::protocol},
       };
   const auto iterator = variables.find(key);
-  if (iterator == variables.end())
+  if (iterator == variables.end()) {
+    known = false;
     return "{{" + key + "}}";
+  }
   return context.*(iterator->second);
 }
 
@@ -110,12 +116,20 @@ std::string expand_template(const std::string& raw,
     const auto token = trimmed(raw.substr(position + 2, end - position - 2));
     if (begins_with(token, "#if ")) {
       branches.push_back({visible, false});
-      visible = visible && evaluate_condition(token.substr(4), context);
+      bool known = false;
+      const auto condition = evaluate_condition(token.substr(4), context, known);
+      if (!known) std::cerr << "ask: prompt template condition is unknown: "
+                            << token.substr(4) << '\n';
+      visible = visible && condition;
       if (visible)
         branches.back().branch_taken = true;
     } else if (begins_with(token, "#unless ")) {
       branches.push_back({visible, false});
-      visible = visible && !evaluate_condition(token.substr(8), context);
+      bool known = false;
+      const auto condition = evaluate_condition(token.substr(8), context, known);
+      if (!known) std::cerr << "ask: prompt template condition is unknown: "
+                            << token.substr(8) << '\n';
+      visible = visible && !condition;
       if (visible)
         branches.back().branch_taken = true;
     } else if (token == "else") {
@@ -124,6 +138,8 @@ std::string expand_template(const std::string& raw,
         visible = frame.parent_visible && !frame.branch_taken;
         if (visible)
           frame.branch_taken = true;
+      } else {
+        std::cerr << "ask: prompt template has {{else}} without an open {{#if}} or {{#unless}}\n";
       }
     } else if (token == "/if" || token == "/unless") {
       if (!branches.empty()) {
@@ -134,10 +150,15 @@ std::string expand_template(const std::string& raw,
       if (visible)
         output << "{{" << token << "}}";
     } else {
-      if (visible)
-        output << lookup_variable(token, context);
+      bool known = false;
+      const auto value = lookup_variable(token, context, known);
+      if (!known) std::cerr << "ask: prompt template variable is unknown: " << token << '\n';
+      if (visible) output << value;
     }
     position = end + 2;
+  }
+  if (!branches.empty()) {
+    std::cerr << "ask: prompt template has an unclosed {{#if}} or {{#unless}} block\n";
   }
   return output.str();
 }

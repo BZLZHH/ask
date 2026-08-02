@@ -278,8 +278,21 @@ Json::Value gemini_contents(const std::vector<Message>& messages) {
       parts.append(part);
     }
     if (message.role == "tool") {
+      std::string function_name = message.tool_call_id;
+      for (auto iterator = messages.rbegin(); iterator != messages.rend(); ++iterator) {
+        if (iterator->role != "assistant") continue;
+        bool found = false;
+        for (const auto& call : iterator->tool_calls) {
+          if (call.id == message.tool_call_id) {
+            function_name = call.name;
+            found = true;
+            break;
+          }
+        }
+        if (found) break;
+      }
       Json::Value part(Json::objectValue);
-      part["functionResponse"]["name"] = message.tool_call_id;
+      part["functionResponse"]["name"] = function_name;
       part["functionResponse"]["response"]["result"] = message.content;
       parts.append(part);
     }
