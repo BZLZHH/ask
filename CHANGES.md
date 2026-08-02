@@ -30,7 +30,7 @@ This file records user-visible changes to `ask`.
 - Time template variables now use the session start time so the configured system prompt remains stable and cache-friendly.
 - The fixed agent-loop and untrusted-data rules moved into the stable core instruction prefix.
 - The runtime permission text stays stable when a request reaches the tool-round limit, avoiding an unnecessary cache miss on the final request.
-- Compaction summaries are appended to the previous summary so the cached prefix remains reusable after context compaction.
+- Compaction summaries are appended up to a token cap, then replaced, so the cached prefix remains reusable without allowing the summary to grow without bound.
 
 ## 0.5.0 - 2026-07-25
 

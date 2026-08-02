@@ -521,7 +521,18 @@ bool Conversation::compact(bool automatic) {
     if (session_.summary.empty()) {
       session_.summary = response.content;
     } else {
-      session_.summary += "\n\nUpdate from later conversation:\n" + response.content;
+      constexpr std::size_t kMaxSummaryTokens = 4096;
+      std::vector<Message> old_summary{{"user", session_.summary, {}, {}}};
+      std::vector<Message> new_summary{{"user", response.content, {}, {}}};
+      const auto old_tokens =
+          estimate_tokens(provider(), options_.model, old_summary, "", Json::Value());
+      const auto new_tokens =
+          estimate_tokens(provider(), options_.model, new_summary, "", Json::Value());
+      if (old_tokens + new_tokens <= kMaxSummaryTokens) {
+        session_.summary += "\n\nUpdate from later conversation:\n" + response.content;
+      } else {
+        session_.summary = response.content;
+      }
     }
     session_.active_from = cut;
     persist();
