@@ -2,6 +2,19 @@
 
 This file records user-visible changes to `ask`.
 
+## 0.6.0 - 2026-08-02
+
+### Added
+
+- Added a small system prompt template layer with `{{variable}}` substitution, `{{#if}}`/`{{#unless}}` conditionals, provider/protocol/model keyed conditions, and template escaping.
+- Added a Unicode-aware token estimator calibrated by model family and protocol-specific message overhead for more accurate compaction decisions.
+- Added a structured compaction prompt with session metadata, tool context, previous-summary merge instructions, and explicit memory sections.
+
+### Changed
+
+- System prompt templates are expanded before the runtime permission block is appended; existing plain-text prompts remain unchanged.
+- Compaction transcripts now distinguish user messages, assistant tool calls, and tool results instead of flattening every message into the same role line.
+
 ## 0.5.0 - 2026-07-25
 
 ### Added

@@ -116,12 +116,14 @@ void setting_row(int row, bool selected, const std::string& label, const std::st
 }
 
 std::optional<std::string> edit_text(const std::string& label, const std::string& initial,
-                                     bool secret = false) {
+                                     bool secret = false,
+                                     const std::string& hint = {}) {
   std::string value = initial;
   std::size_t cursor = value.size();
   for (;;) {
     heading(label);
     mvaddnstr(3, 2, "Edit value", std::max(0, COLS - 4));
+    if (!hint.empty()) mvaddnstr(4, 2, hint.c_str(), std::max(0, COLS - 4));
     const int width = std::max(1, COLS - 6);
     std::size_t offset = cursor > static_cast<std::size_t>(width - 1)
                              ? cursor - static_cast<std::size_t>(width - 1)
@@ -129,12 +131,13 @@ std::optional<std::string> edit_text(const std::string& label, const std::string
     auto visible = value.substr(offset, static_cast<std::size_t>(width));
     if (secret) visible.assign(visible.size(), '*');
     attron(A_REVERSE);
-    mvaddnstr(5, 2, std::string(static_cast<std::size_t>(width), ' ').c_str(), width);
-    mvaddnstr(5, 2, visible.c_str(), width);
+    const int input_row = hint.empty() ? 5 : 6;
+    mvaddnstr(input_row, 2, std::string(static_cast<std::size_t>(width), ' ').c_str(), width);
+    mvaddnstr(input_row, 2, visible.c_str(), width);
     attroff(A_REVERSE);
     footer("Left/Right move cursor  Enter apply  Esc cancel");
     curs_set(1);
-    move(5, 2 + static_cast<int>(cursor - offset));
+    move(input_row, 2 + static_cast<int>(cursor - offset));
     refresh();
     const int key = getch();
     curs_set(0);
@@ -1072,7 +1075,8 @@ RootAction general_page(Config& config, const Config& original, ChatClient* clie
         if (value) config.settings.max_tool_rounds =
             parse_int(*value, config.settings.max_tool_rounds, 1, 50);
       } else if (selected == 4) {
-        value = edit_text(settings_path({"System prompt"}), config.settings.system_prompt);
+        value = edit_text(settings_path({"System prompt"}), config.settings.system_prompt, false,
+                          "Use {{cwd}}, {{model}}, {{date}}, {{#if do_mode}}...{{/if}}");
         if (value) config.settings.system_prompt = *value;
       } else if (selected == 5) {
         ai_call_page(config, original);

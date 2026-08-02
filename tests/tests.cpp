@@ -9,7 +9,9 @@
 
 #include "ask/cli.hpp"
 #include "ask/config.hpp"
+#include "ask/prompt_template.hpp"
 #include "ask/session.hpp"
+#include "ask/token_estimator.hpp"
 #include "ask/tools.hpp"
 
 namespace {
@@ -356,6 +358,85 @@ void test_tools(const std::filesystem::path& root) {
          "HTTP tool rejects loopback destinations");
 }
 
+void test_prompt_template() {
+  ask::TemplateContext context;
+  context.cwd = "/tmp/project";
+  context.model = "gpt-4o";
+  context.provider = "openai";
+  context.provider_name = "OpenAI";
+  context.protocol = "openai";
+  context.do_mode = true;
+  context.read_only = false;
+  context.has_tools = true;
+  context.streaming = true;
+
+  expect(ask::expand_template("plain text", context) == "plain text",
+         "templates without markers pass through unchanged");
+  expect(ask::expand_template("{{cwd}}/x", context) == "/tmp/project/x",
+         "template variables are replaced");
+  expect(ask::expand_template("{{#if do_mode}}yes{{else}}no{{/if}}", context) == "yes",
+         "true if branch renders");
+  expect(ask::expand_template("{{#unless read_only}}full{{/unless}}", context) == "full",
+         "unless renders when the condition is false");
+  expect(ask::expand_template("{{#if provider:openai}}{{provider_name}}{{/if}}", context) ==
+             "OpenAI",
+         "keyed conditions can select by provider");
+
+  context.do_mode = false;
+  context.read_only = true;
+  expect(ask::expand_template("{{#if do_mode}}yes{{else}}no{{/if}}", context) == "no",
+         "false if branch renders the else body");
+  expect(ask::expand_template("{{#if do_mode}}a{{#if read_only}}b{{else}}c{{/if}}d"
+                              "{{else}}e{{/if}}",
+                              context) == "e",
+         "nested condition blocks preserve parent visibility");
+  expect(ask::expand_template("\\{{cwd}}", context) == "{{cwd}}",
+         "backslash escapes the template marker");
+  expect(ask::expand_template("{{unknown}}", context) == "{{unknown}}",
+         "unknown variables remain literal");
+}
+
+void test_token_estimator() {
+  ask::Provider provider;
+  provider.id = "local";
+  provider.protocol = "openai";
+
+  const std::string chinese =
+      "\xE4\xBD\xA0\xE5\xA5\xBD\xE4\xB8\x96\xE7\x95\x8C"
+      "\xE4\xBD\xA0\xE5\xA5\xBD\xE4\xB8\x96\xE7\x95\x8C"
+      "\xE4\xBD\xA0\xE5\xA5\xBD\xE4\xB8\x96\xE7\x95\x8C"
+      "\xE4\xBD\xA0\xE5\xA5\xBD\xE4\xB8\x96\xE7\x95\x8C"
+      "\xE4\xBD\xA0\xE5\xA5\xBD\xE4\xB8\x96\xE7\x95\x8C";
+  const auto openai_estimate =
+      ask::estimate_tokens(provider, "gpt-4o", {}, chinese, Json::Value());
+  expect(openai_estimate < 20, "UTF-8 text is not estimated by byte count");
+  expect(openai_estimate > 0, "token estimates are always positive");
+
+  provider.protocol = "anthropic";
+  const auto anthropic_estimate =
+      ask::estimate_tokens(provider, "claude-3-5-sonnet", {}, chinese, Json::Value());
+  provider.protocol = "gemini";
+  const auto gemini_estimate =
+      ask::estimate_tokens(provider, "gemini-2.0-flash", {}, chinese, Json::Value());
+  expect(anthropic_estimate < gemini_estimate,
+         "model-family profiles calibrate token estimates");
+
+  provider.protocol = "openai";
+  std::vector<ask::Message> messages{{"user", "hello", {}, {}}};
+  Json::Value tools(Json::arrayValue);
+  Json::Value tool(Json::objectValue);
+  tool["type"] = "function";
+  tool["function"]["name"] = "read_file";
+  tool["function"]["description"] = "Read a file.";
+  tool["function"]["parameters"]["type"] = "object";
+  tools.append(tool);
+  const auto without_tools =
+      ask::estimate_tokens(provider, "gpt-4o", messages, "hello", Json::Value());
+  const auto with_tools =
+      ask::estimate_tokens(provider, "gpt-4o", messages, "hello", tools);
+  expect(with_tools > without_tools, "tool schemas are included in the estimate");
+}
+
 }  // namespace
 
 int main() {
@@ -365,6 +446,8 @@ int main() {
     test_config(root);
     test_sessions(root);
     test_tools(root);
+    test_prompt_template();
+    test_token_estimator();
   } catch (const std::exception& error) {
     std::cerr << "UNCAUGHT: " << error.what() << '\n';
     ++failures;

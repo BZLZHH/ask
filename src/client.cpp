@@ -763,21 +763,4 @@ std::vector<std::string> ChatClient::fetch_models(const Provider& provider) cons
   return models;
 }
 
-std::size_t estimate_tokens(const std::vector<Message>& messages,
-                            const std::string& system_prompt,
-                            const Json::Value& tools) {
-  std::size_t characters = system_prompt.size();
-  std::size_t overhead = 8;
-  for (const auto& message : messages) {
-    characters += message.role.size() + message.content.size() + message.tool_call_id.size();
-    overhead += 6;
-    for (const auto& call : message.tool_calls) {
-      characters += call.id.size() + call.name.size() + call.arguments.size();
-      overhead += 8;
-    }
-  }
-  if (!tools.isNull()) characters += json_string(tools).size();
-  return (characters + 2) / 3 + overhead;
-}
-
 }  // namespace ask

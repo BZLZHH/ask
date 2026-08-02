@@ -141,6 +141,22 @@ If the Judge request fails, times out, or returns an invalid decision, `ask` saf
 
 After `Automatic` chooses exit or `Always exit` applies, running bare `ask` in the same working directory within 10 seconds restores that conversation, prints `resumed`, and opens the REPL. The quick-resume record is consumed once. A prompt, `resume`, `--config`, or any other explicit entry option starts its requested flow instead. Restored sessions retain their provider, model, message history, working directory, and `--do` mode.
 
+### Prompt Templates
+
+The configured system prompt supports a small template language. Existing plain-text prompts work unchanged; `{{` activates expansion.
+
+| Syntax | Meaning |
+|---|---|
+| `{{cwd}}` | Current working directory |
+| `{{date}}`, `{{time}}`, `{{datetime}}` | Local date and time |
+| `{{hostname}}`, `{{user}}`, `{{shell}}` | Machine and user context |
+| `{{os}}`, `{{arch}}` | Platform name and architecture |
+| `{{model}}`, `{{provider}}`, `{{provider_name}}`, `{{protocol}}` | Active model and provider |
+| `{{#if do_mode}}...{{else}}...{{/if}}` | Conditional content |
+| `{{#unless read_only}}...{{/unless}}` | Inverted conditional content |
+
+Available conditions are `do_mode`, `read_only`, `has_tools`, and `streaming`, plus keyed matches such as `{{#if provider:openai}}`, `{{#if protocol:anthropic}}`, and `{{#if model:gpt-4o}}`. Unknown variables remain literal and unknown conditions render nothing. Use `\{{` for a literal template marker. The runtime permission block is always appended after template expansion.
+
 ## Command-Line Usage
 
 ```text
@@ -343,7 +359,7 @@ Before every request, `ask` estimates the size of:
 - Pending user input
 - Reserved output tokens
 
-When the prediction reaches the configured share of the model context window, `ask` asks the active model to create a compact summary. The default threshold is 70%. The original transcript remains in SQLite; only the active API request view advances to the summary and recent turns.
+Token estimation is Unicode-aware and calibrated by model family, so CJK text, code, tool schemas, and protocol-specific message overhead do not all share the same rough byte-per-token ratio. When the prediction reaches the configured share of the model context window, `ask` asks the active model to create a structured working memory with session metadata and explicit instructions to merge any previous summary. The default threshold is 70%. The original transcript remains in SQLite; only the active API request view advances to the summary and recent turns.
 
 ## File Locations
 

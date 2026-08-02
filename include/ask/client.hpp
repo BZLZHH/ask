@@ -39,8 +39,4 @@ class ChatClient {
   HttpClient http_;
 };
 
-std::size_t estimate_tokens(const std::vector<Message>& messages,
-                            const std::string& system_prompt,
-                            const Json::Value& tools = Json::Value());
-
 }  // namespace ask

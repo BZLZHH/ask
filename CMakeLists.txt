@@ -19,6 +19,8 @@ add_library(ask_core
   src/session.cpp
   src/client.cpp
   src/tools.cpp
+  src/prompt_template.cpp
+  src/token_estimator.cpp
   src/tui.cpp
   src/repl.cpp
   src/cli.cpp
