@@ -357,9 +357,9 @@ void test_conferences(const std::filesystem::path& root) {
  expect(loaded && !loaded->decisions.empty() &&
  loaded->decisions.front().find("[confirmed]") == 0 &&
  engine.summary().find("Open questions") != std::string::npos &&
- engine.summary().find(" A risks ") != std::string::npos &&
+ engine.summary().find("Use a phased rollout") != std::string::npos &&
  engine.summary().find("Agenda and phase conclusions") != std::string::npos,
- "conference summary retains structured sections, agenda conclusions, and participant contributions");
+ "conference summary retains structured sections and agenda conclusions");
  const auto export_path = engine.export_summary("exports/release-summary.md");
  std::ifstream exported(export_path);
  std::string exported_text((std::istreambuf_iterator<char>(exported)), std::istreambuf_iterator<char>());

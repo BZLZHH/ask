@@ -41,6 +41,7 @@ This file records user-visible changes to `ask`.
 - Conference TUI now shows a status line with token, cache, request, and model information.
 - Conference cache reporting now distinguishes the last-request hit ratio from cumulative totals, and stable prompt sections absorb the shared meeting/role instructions to reduce the per-turn dynamic tail.
 - Conference prompts now rely on append-only event history for facts, questions, and user-question state instead of rebuilding a large per-turn state message, which keeps the cached prefix stable across turns.
+- Meeting summaries are now concise structured summaries of goal, rules, decisions, actions, facts, open questions, agenda conclusions, and the moderator's final conclusion instead of dumping the full discussion timeline.
 
 ## 0.5.0 - 2026-07-25
 

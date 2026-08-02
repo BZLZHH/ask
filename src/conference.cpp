@@ -1860,21 +1860,11 @@ void ConferenceEngine::conclude() {
 std::string ConferenceEngine::summary() const {
  std::lock_guard lock(mutex_);
  std::ostringstream output;
- output << "goal：" << conference_.goal << "\nStatus：" << conference_status_name(conference_.status)
- << "\nRounds：" << conference_.round;
- if (conference_.last_prompt_tokens > 0) {
- const int percent = static_cast<int>(
- (static_cast<double>(conference_.last_cached_tokens) / conference_.last_prompt_tokens) *
- 100.0 + 0.5);
- output << "\nlast request cache: prompt " << conference_.last_prompt_tokens
- << ", cached " << conference_.last_cached_tokens
- << ", created " << conference_.last_cache_creation_tokens
- << ", hit " << percent << "%";
- }
- output << "\ncumulative cache: prompt " << conference_.total_prompt_tokens
- << ", cached " << conference_.total_cached_tokens
- << ", created " << conference_.total_cache_creation_tokens
- << ", requests " << conference_.request_count;
+ output << "Meeting Minutes\ngoal：" << conference_.goal
+ << "\nStatus：" << conference_status_name(conference_.status)
+ << "\nRounds：" << conference_.round
+ << "\nCurrent rules：" << conference_.rules;
+
  const auto moderator = std::find_if(conference_.participants.begin(), conference_.participants.end(),
  [](const auto& participant) { return participant.kind == "moderator"; });
  const auto final_moderator = std::find_if(conference_.events.rbegin(), conference_.events.rend(),
@@ -1883,7 +1873,7 @@ std::string ConferenceEngine::summary() const {
  event.state == "completed" && event.author == moderator->name && !event.content.empty();
  });
  if (final_moderator != conference_.events.rend()) {
- output << "\nModeratorfinalconclusion：";
+ std::ostringstream conclusion;
  std::istringstream lines(final_moderator->content);
  std::string line;
  bool wrote_line = false;
@@ -1892,70 +1882,80 @@ std::string ConferenceEngine::summary() const {
  if (directive.rfind("NEXT_SPEAKER:", 0) == 0 || directive.rfind("NEXT_PURPOSE:", 0) == 0 ||
  directive.rfind("AGENDA:", 0) == 0 || directive.rfind("AGENDA_CONCLUSION:", 0) == 0 ||
  directive.rfind("AUTOPILOT:", 0) == 0) continue;
- output << "\n" << line;
+ conclusion << "\n" << line;
  wrote_line = true;
  }
- if (!wrote_line) output << " finalconclusion。";
+ if (wrote_line) {
+ auto text = conclusion.str();
+ if (text.size() > 1200) text = text.substr(0, 1200) + "\n（ finalconclusion ）";
+ output << "\n\nModeratorfinalconclusion：" << text;
  }
- const auto write_section = [&](const std::string& title, const std::vector<std::string>& values) {
+ }
+
+ const auto write_capped_section = [&](const std::string& title,
+ const std::vector<std::string>& values,
+ std::size_t max_items,
+ std::size_t max_chars = 240) {
  output << "\n" << title << "：";
  if (values.empty()) output << " ";
- for (const auto& value : values) output << "\n- " << value;
- };
- write_section("confirmed facts", conference_.facts);
- write_section("Open questions", conference_.open_questions);
- write_section("decisions", conference_.decisions);
- write_section("action items", conference_.action_items);
- output << "\nParticipant seats：";
- for (const auto& participant : conference_.participants) {
- output << "\n- #" << participant.seat_number << " " << participant.name
- << "（" << participant.role << "）：" << participant.responsibility
- << " [" << participant.provider << " / " << participant.model << "]";
+ std::size_t shown = 0;
+ for (const auto& value : values) {
+ if (shown >= max_items) break;
+ std::string item = trim(value);
+ if (item.size() > max_chars) item = item.substr(0, max_chars) + "...";
+ output << "\n- " << item;
+ ++shown;
  }
+ if (values.size() > shown) output << "\n（ " << (values.size() - shown) << " ）";
+ };
+
+ write_capped_section("decisions", conference_.decisions, 40, 300);
+ write_capped_section("action items", conference_.action_items, 40, 300);
+ write_capped_section("confirmed facts", conference_.facts, 30);
+ write_capped_section("Open questions", conference_.open_questions, 20);
+
  output << "\nAgenda and phase conclusions：";
  if (conference_.agenda.empty()) output << " ";
+ std::size_t agenda_shown = 0;
  for (const auto& item : conference_.agenda) {
+ if (agenda_shown >= 30) break;
  output << "\n- [" << item.status << "] " << item.title;
- if (!item.conclusion.empty()) output << "\n Phase conclusion：" << item.conclusion;
+ if (!item.conclusion.empty()) {
+ auto conclusion = trim(item.conclusion);
+ if (conclusion.size() > 300) conclusion = conclusion.substr(0, 300) + "...";
+ output << "\n Phase conclusion：" << conclusion;
  }
+ ++agenda_shown;
+ }
+
  output << "\nUserquestion and ：";
  if (conference_.user_questions.empty()) output << " ";
- for (const auto& question : conference_.user_questions) {
+ const auto question_begin = conference_.user_questions.size() > 10
+ ? conference_.user_questions.size() - 10 : 0;
+ for (std::size_t index = question_begin; index < conference_.user_questions.size(); ++index) {
+ const auto& question = conference_.user_questions[index];
  output << "\n- [" << question.status << "] " << question.question;
  if (!question.options.empty()) {
  output << "\n options：";
  for (const auto& option : question.options) output << " | " << option;
  }
- if (!question.answer.empty()) output << "\n ：" << question.answer;
+ if (!question.answer.empty()) {
+ auto answer = trim(question.answer);
+ if (answer.size() > 240) answer = answer.substr(0, 240) + "...";
+ output << "\n ：" << answer;
  }
+ }
+
+ output << "\nParticipant seats：";
+ for (const auto& participant : conference_.participants) {
+ output << "\n- #" << participant.seat_number << " " << participant.name
+ << "（" << participant.role << "）";
+ }
+
  if (!conference_.context_summary.empty()) {
- output << "\n ：\n" << conference_.context_summary;
- }
- output << "\n ：";
- constexpr std::size_t max_discussion_characters = 24000;
- std::size_t emitted_characters = 0;
- bool has_discussion = false;
- for (const auto& event : conference_.events) {
- if (event.type != "discussion" || event.content.empty() ||
- (event.state != "completed" && event.state != "limited")) continue;
- has_discussion = true;
- const std::string header = "\n[ " + std::to_string(event.round) + " | " + event.author +
- (event.role.empty() ? "]\n" : " | " + event.role + "]\n");
- if (emitted_characters + header.size() >= max_discussion_characters) break;
- output << header;
- emitted_characters += header.size();
- const auto remaining = max_discussion_characters - emitted_characters;
- if (event.content.size() > remaining) {
- output << event.content.substr(0, remaining) << "\n（ ）";
- emitted_characters = max_discussion_characters;
- break;
- }
- output << event.content;
- emitted_characters += event.content.size();
- }
- if (!has_discussion) output << " ";
- else if (emitted_characters >= max_discussion_characters) {
- output << "\n（ ； conference ）";
+ auto early = conference_.context_summary;
+ if (early.size() > 4000) early = early.substr(0, 4000) + "\n（ ， ）";
+ output << "\n ：\n" << early;
  }
  return output.str();
 }
