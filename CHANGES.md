@@ -13,6 +13,8 @@ This file records user-visible changes to `ask`.
 - Added warnings for malformed or unknown prompt template syntax.
 - Added a fixed core instruction block at the front of every model system prompt with grounded-answer, tool-use, error-recovery, and output-format guidance.
 - Added Anthropic prompt-caching `cache_control` breakpoints on the system prompt, first user message, and final message.
+- Added provider cache metric parsing for OpenAI cached tokens, Anthropic cache read/creation tokens, and Gemini cached content tokens.
+- Added a `!cache` REPL command and JSON usage fields that report provider cache utilization for the last request.
 
 ### Changed
 

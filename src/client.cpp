@@ -169,6 +169,8 @@ ChatResponse parse_openai(const Json::Value& root) {
   response.usage.prompt_tokens = root["usage"].get("prompt_tokens", 0).asInt();
   response.usage.completion_tokens = root["usage"].get("completion_tokens", 0).asInt();
   response.usage.total_tokens = root["usage"].get("total_tokens", 0).asInt();
+  response.usage.cached_tokens =
+      root["usage"]["prompt_tokens_details"].get("cached_tokens", 0).asInt();
   response.raw = root;
   return response;
 }
@@ -281,6 +283,9 @@ ChatResponse parse_anthropic(const Json::Value& root) {
   response.usage.prompt_tokens = root["usage"].get("input_tokens", 0).asInt();
   response.usage.completion_tokens = root["usage"].get("output_tokens", 0).asInt();
   response.usage.total_tokens = response.usage.prompt_tokens + response.usage.completion_tokens;
+  response.usage.cached_tokens = root["usage"].get("cache_read_input_tokens", 0).asInt();
+  response.usage.cache_creation_tokens =
+      root["usage"].get("cache_creation_input_tokens", 0).asInt();
   response.raw = root;
   return response;
 }
@@ -365,6 +370,8 @@ ChatResponse parse_gemini(const Json::Value& root) {
   response.usage.prompt_tokens = root["usageMetadata"].get("promptTokenCount", 0).asInt();
   response.usage.completion_tokens = root["usageMetadata"].get("candidatesTokenCount", 0).asInt();
   response.usage.total_tokens = root["usageMetadata"].get("totalTokenCount", 0).asInt();
+  response.usage.cached_tokens =
+      root["usageMetadata"].get("cachedContentTokenCount", 0).asInt();
   response.raw = root;
   return response;
 }
@@ -629,6 +636,9 @@ ChatResponse ChatClient::stream(const Provider& provider,
         response.usage.completion_tokens =
             root["usage"].get("completion_tokens", response.usage.completion_tokens).asInt();
         response.usage.total_tokens = root["usage"].get("total_tokens", response.usage.total_tokens).asInt();
+        response.usage.cached_tokens =
+            root["usage"]["prompt_tokens_details"].get("cached_tokens",
+                                                        response.usage.cached_tokens).asInt();
       }
       const auto& choice = root["choices"][0];
       if (choice.isNull()) return;
@@ -686,6 +696,12 @@ ChatResponse ChatClient::stream(const Provider& provider,
       const auto type = root.get("type", "").asString();
       if (type == "message_start") {
         response.usage.prompt_tokens = root["message"]["usage"].get("input_tokens", 0).asInt();
+        response.usage.cached_tokens =
+            root["message"]["usage"].get("cache_read_input_tokens",
+                                         response.usage.cached_tokens).asInt();
+        response.usage.cache_creation_tokens =
+            root["message"]["usage"].get("cache_creation_input_tokens",
+                                         response.usage.cache_creation_tokens).asInt();
       } else if (type == "content_block_start") {
         const auto& block = root["content_block"];
         if (block.get("type", "").asString() == "tool_use") {
@@ -713,6 +729,11 @@ ChatResponse ChatClient::stream(const Provider& provider,
         response.usage.completion_tokens =
             root["usage"].get("output_tokens", response.usage.completion_tokens).asInt();
         response.usage.total_tokens = response.usage.prompt_tokens + response.usage.completion_tokens;
+        response.usage.cached_tokens =
+            root["usage"].get("cache_read_input_tokens", response.usage.cached_tokens).asInt();
+        response.usage.cache_creation_tokens =
+            root["usage"].get("cache_creation_input_tokens",
+                              response.usage.cache_creation_tokens).asInt();
       }
     });
     const auto http = http_.request_stream(
@@ -750,6 +771,9 @@ ChatResponse ChatClient::stream(const Provider& provider,
             root["usageMetadata"].get("candidatesTokenCount", response.usage.completion_tokens).asInt();
         response.usage.total_tokens =
             root["usageMetadata"].get("totalTokenCount", response.usage.total_tokens).asInt();
+        response.usage.cached_tokens =
+            root["usageMetadata"].get("cachedContentTokenCount",
+                                      response.usage.cached_tokens).asInt();
       }
       for (const auto& candidate : root["candidates"]) {
         if (candidate["finishReason"].isString()) response.finish_reason = candidate["finishReason"].asString();

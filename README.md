@@ -228,6 +228,7 @@ When stdin and stdout are both terminals, the configured Conversation entry poli
 | `!model` | Switch the provider and model for the current session |
 | `!config` | Open configuration and then return to the current conversation |
 | `!compact` | Ask the current model to summarize older active context |
+| `!cache` | Show provider-reported cache utilization for the last request |
 | `!help` | Show REPL commands |
 | `!q` | Save and quit |
 
@@ -273,7 +274,9 @@ JSON output has this shape:
   "usage": {
     "prompt_tokens": 42,
     "completion_tokens": 18,
-    "total_tokens": 60
+    "total_tokens": 60,
+    "cached_tokens": 36,
+    "cache_creation_tokens": 12
   }
 }
 ```

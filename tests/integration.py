@@ -60,7 +60,9 @@ class Provider(BaseHTTPRequestHandler):
         if self.path == "/v1/messages":
             if request.get("stream"):
                 self.send_sse([
-                    {"type": "message_start", "message": {"usage": {"input_tokens": 8}}},
+                    {"type": "message_start",
+                     "message": {"usage": {"input_tokens": 8, "cache_read_input_tokens": 5,
+                                            "cache_creation_input_tokens": 3}}},
                     {"type": "content_block_start", "index": 0,
                      "content_block": {"type": "text", "text": ""}},
                     {"type": "content_block_delta", "index": 0,
@@ -68,14 +70,16 @@ class Provider(BaseHTTPRequestHandler):
                     {"type": "content_block_delta", "index": 0,
                      "delta": {"type": "text_delta", "text": "ok"}},
                     {"type": "message_delta", "delta": {"stop_reason": "end_turn"},
-                     "usage": {"output_tokens": 2}},
+                     "usage": {"output_tokens": 2, "cache_read_input_tokens": 5,
+                               "cache_creation_input_tokens": 3}},
                     {"type": "message_stop"},
                 ])
                 return
             self.send_json({
                 "content": [{"type": "text", "text": "anthropic ok"}],
                 "stop_reason": "end_turn",
-                "usage": {"input_tokens": 8, "output_tokens": 2},
+                "usage": {"input_tokens": 8, "output_tokens": 2,
+                          "cache_read_input_tokens": 5, "cache_creation_input_tokens": 3},
             })
             return
         if "generatecontent" in self.path.lower():
@@ -105,7 +109,7 @@ class Provider(BaseHTTPRequestHandler):
                         "finishReason": "STOP",
                     }],
                     "usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 1,
-                                      "totalTokenCount": 8},
+                                      "totalTokenCount": 8, "cachedContentTokenCount": 4},
                 }
                 if self.path.endswith(":streamGenerateContent?alt=sse"):
                     self.send_sse([payload])
@@ -119,7 +123,7 @@ class Provider(BaseHTTPRequestHandler):
                         "finishReason": "STOP",
                     }],
                     "usageMetadata": {"promptTokenCount": 8, "candidatesTokenCount": 2,
-                                      "totalTokenCount": 10},
+                                      "totalTokenCount": 10, "cachedContentTokenCount": 6},
                 }
                 if self.path.endswith(":streamGenerateContent?alt=sse"):
                     self.send_sse([payload])
@@ -132,7 +136,7 @@ class Provider(BaseHTTPRequestHandler):
                 {"candidates": [{"content": {"role": "model", "parts": [{"text": "ok"}]},
                                   "finishReason": "STOP"}],
                  "usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 2,
-                                   "totalTokenCount": 9}},
+                                   "totalTokenCount": 9, "cachedContentTokenCount": 4}},
             ])
             return
         if self.path.endswith(":generateContent"):
@@ -145,6 +149,7 @@ class Provider(BaseHTTPRequestHandler):
                     "promptTokenCount": 7,
                     "candidatesTokenCount": 2,
                     "totalTokenCount": 9,
+                    "cachedContentTokenCount": 4,
                 },
             })
             return
@@ -276,7 +281,8 @@ class Provider(BaseHTTPRequestHandler):
                     {"choices": [{"delta": {"content": "tool "}, "finish_reason": None}]},
                     {"choices": [{"delta": {"content": "complete"}, "finish_reason": "stop"}]},
                     {"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 2,
-                                               "total_tokens": 12}},
+                                               "total_tokens": 12,
+                                               "prompt_tokens_details": {"cached_tokens": 6}}},
                     "[DONE]",
                 ])
             elif user == "slow stream":
@@ -291,7 +297,8 @@ class Provider(BaseHTTPRequestHandler):
                     {"choices": [{"delta": {"content": "echo: "}, "finish_reason": None}]},
                     {"choices": [{"delta": {"content": user}, "finish_reason": "stop"}]},
                     {"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 2,
-                                               "total_tokens": 12}},
+                                               "total_tokens": 12,
+                                               "prompt_tokens_details": {"cached_tokens": 6}}},
                     "[DONE]",
                 ])
             return
@@ -413,7 +420,8 @@ class Provider(BaseHTTPRequestHandler):
             finish = "stop"
         self.send_json({
             "choices": [{"message": message, "finish_reason": finish}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12,
+                      "prompt_tokens_details": {"cached_tokens": 6}},
         })
 
 
@@ -467,6 +475,10 @@ def exercise_repl(binary, root, env):
         assert b"pty hello" not in terminal.buffer
         terminal.expect("pty hello")
         terminal.expect("ask> ")
+
+        terminal.send(b"!cache\n")
+        cache = terminal.expect("ask> ")
+        assert b"cached share of prompt: 60%" in cache, cache
 
         terminal.send(b"line one\\\n")
         terminal.expect("... ")
@@ -1640,6 +1652,8 @@ def run(binary):
             assert payload["text"] == "echo: json test"
             assert payload["model"] == "mock-model", payload
             assert payload["usage"]["total_tokens"] == 12
+            assert payload["usage"]["cached_tokens"] == 6, payload
+            assert payload["usage"]["cache_creation_tokens"] == 0, payload
             with server.requests_lock:
                 json_requests = server.requests[before_json:]
             assert json_requests and json_requests[-1][1]["stream"] is False, json_requests

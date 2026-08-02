@@ -26,8 +26,8 @@
 namespace ask {
 namespace {
 
-constexpr std::array<std::string_view, 7> kCommands = {
-    "!ask", "!compact", "!config", "!do", "!help", "!model", "!q"};
+constexpr std::array<std::string_view, 8> kCommands = {
+    "!ask", "!cache", "!compact", "!config", "!do", "!help", "!model", "!q"};
 
 enum class PermissionState { read_only, forced_read_only, do_turn, do_once, do_conversation };
 
@@ -322,6 +322,7 @@ void print_help() {
   std::cout << "ask mode         read files, search, and run allowlisted read-only commands\n"
                "!do PROMPT       use full tools for one turn\n"
                "!ask PROMPT      force read-only tools for one turn\n"
+               "!cache           show provider cache utilization for the last request\n"
                "!model           choose provider and model\n"
                "!config          open settings\n"
                "!compact         summarize older context\n"
@@ -388,6 +389,24 @@ bool Conversation::maybe_compact(const std::string& pending, bool do_mode,
     return false;
   }
   return true;
+}
+
+void Conversation::report_cache_usage() {
+  const auto& usage = last_usage_;
+  std::cout << "cache utilization\n"
+            << "  prompt tokens: " << usage.prompt_tokens << '\n'
+            << "  cached tokens: " << usage.cached_tokens << '\n'
+            << "  cache creation tokens: " << usage.cache_creation_tokens << '\n';
+  if (usage.prompt_tokens > 0 && usage.cached_tokens > 0) {
+    const int percent = static_cast<int>(
+        (static_cast<double>(usage.cached_tokens) / usage.prompt_tokens) * 100.0 + 0.5);
+    std::cout << "  cached share of prompt: " << percent << "%\n";
+  } else if (usage.prompt_tokens > 0 && usage.cache_creation_tokens > 0) {
+    std::cout << "  cached share of prompt: 0% (cache created " << usage.cache_creation_tokens
+              << " tokens)\n";
+  } else {
+    std::cout << "  provider cache metrics unavailable for the last request\n";
+  }
 }
 
 std::string Conversation::handle_do_mode_request(const std::string& arguments,
@@ -586,6 +605,7 @@ bool Conversation::send(const std::string& input, std::optional<bool> one_shot_d
         response = client_.complete(provider(), options_.model, active_messages(session_),
                                     request_system_prompt, config_.settings, request_schemas);
       }
+      last_usage_ = response.usage;
       if (once_for_this_batch && !options_.quiet) {
         std::cerr << "ask: one-time do mode consumed; returning to read-only\n";
       }
@@ -603,6 +623,8 @@ bool Conversation::send(const std::string& input, std::optional<bool> one_shot_d
           output["usage"]["prompt_tokens"] = response.usage.prompt_tokens;
           output["usage"]["completion_tokens"] = response.usage.completion_tokens;
           output["usage"]["total_tokens"] = response.usage.total_tokens;
+          output["usage"]["cached_tokens"] = response.usage.cached_tokens;
+          output["usage"]["cache_creation_tokens"] = response.usage.cache_creation_tokens;
           std::cout << json_string(output) << '\n';
         } else {
           std::cout << response.content << '\n';
@@ -722,6 +744,10 @@ int Conversation::repl() {
     }
     if (command == "!compact") {
       compact(false);
+      continue;
+    }
+    if (command == "!cache") {
+      report_cache_usage();
       continue;
     }
     if (command == "!config") {

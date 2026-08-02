@@ -37,6 +37,7 @@ class Conversation {
  private:
   bool maybe_compact(const std::string& pending, bool do_mode,
                      const std::string& system_prompt);
+  void report_cache_usage();
   std::string handle_do_mode_request(const std::string& arguments,
                                      bool& allow_once_for_next_batch);
   bool execute_shell(const std::string& command);
@@ -51,6 +52,7 @@ class Conversation {
   RunOptions options_;
   ChatClient client_;
   ToolExecutor tools_;
+  Usage last_usage_;
   volatile std::sig_atomic_t cancelled_{0};
 };
 
