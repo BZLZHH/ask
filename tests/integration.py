@@ -772,6 +772,39 @@ def exercise_tool_limit_history(binary, server, root, env):
     assert not limit_results, after_request
 
 
+def exercise_cache_stable_templates(binary, server, root, env):
+    config_home = root / "cache-stable-config"
+    data_home = root / "cache-stable-data"
+    config_home.mkdir()
+    config = protocol_config(
+        "openai", f"http://127.0.0.1:{server.server_port}/v1", "mock-model"
+    )
+    config["settings"].update({
+        "conversation_entry_mode": "always_continue",
+        "stream_output": True,
+        "system_prompt": "Stable {{time}} {{datetime}}",
+    })
+    (config_home / "config.json").write_text(json.dumps(config))
+    cache_env = env.copy()
+    cache_env["ASK_CONFIG_HOME"] = str(config_home)
+    cache_env["ASK_DATA_HOME"] = str(data_home)
+    before = request_count(server)
+    terminal = PtyProcess([binary, "first"], root, cache_env)
+    try:
+        terminal.expect("echo: first")
+        terminal.expect("ask> ")
+        terminal.send(b"second\n")
+        reply = terminal.expect("ask> ")
+        assert b"echo: second" in reply, reply
+        terminal.send(b"!q\n")
+        assert terminal.process.wait(timeout=5) == 0
+    finally:
+        stop_pty(terminal)
+    prompts = [request_system_prompt(request) for request in request_slice(server, before)]
+    assert len(prompts) >= 2, prompts
+    assert len(set(prompts)) == 1, prompts
+
+
 def permission_environment(root, env, server, name, entry_mode="always_continue"):
     workspace = root / (name + "-workspace")
     config_home = root / (name + "-config")
@@ -808,7 +841,11 @@ def request_system_prompt(request):
         assert len(systems) == 1, body
         return systems[0]
     if path == "/v1/messages":
-        return body.get("system", "")
+        system = body.get("system", "")
+        if isinstance(system, list):
+            return "\n".join(block.get("text", "") for block in system
+                             if block.get("type") == "text")
+        return system
     if "GenerateContent" in path or "generateContent" in path:
         parts = body.get("systemInstruction", {}).get("parts", [])
         assert len(parts) == 1, body
@@ -1429,6 +1466,11 @@ def exercise_generation_settings(binary, server, root, env):
     assert body["thinking"] == {"type": "enabled", "budget_tokens": 1200}, body
     assert "temperature" not in body and "top_p" not in body, body
     assert body["max_tokens"] == 1300, body
+    assert isinstance(body["system"], list), body
+    assert body["system"][0]["cache_control"] == {"type": "ephemeral"}, body
+    assert body["system"][0]["text"].startswith("[ask core instructions]"), body
+    first_user = next(m for m in body["messages"] if m.get("role") == "user")
+    assert first_user["content"][0].get("cache_control") == {"type": "ephemeral"}, body
     assert_permission_context(requests[-1], "ASK_READ_ONLY")
 
     anthropic["settings"]["stream_output"] = True
@@ -1611,6 +1653,7 @@ def run(binary):
             assert (data_home / "sessions.db").exists()
             exercise_repl(binary, root, env)
             exercise_tool_limit_history(binary, server, root, env)
+            exercise_cache_stable_templates(binary, server, root, env)
             exercise_permissions(binary, server, root, env)
             exercise_entry_policy(binary, server, root, env)
             exercise_protocols_and_auto_compact(binary, server, root, env)

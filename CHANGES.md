@@ -12,6 +12,7 @@ This file records user-visible changes to `ask`.
 - Added explicit agent tool-loop instructions and a global untrusted-data rule to the runtime permission block.
 - Added warnings for malformed or unknown prompt template syntax.
 - Added a fixed core instruction block at the front of every model system prompt with grounded-answer, tool-use, error-recovery, and output-format guidance.
+- Added Anthropic prompt-caching `cache_control` breakpoints on the system prompt, first user message, and final message.
 
 ### Changed
 
@@ -24,6 +25,10 @@ This file records user-visible changes to `ask`.
 - Tool-round-limit responses are normalized into a final assistant message so no dangling tool call remains in history.
 - Historical compaction summaries are now injected as a single trusted context message instead of a fake user/assistant acknowledgement.
 - Tool schema descriptions now include decision guidance for when to use read-only, mutation, web, and permission-request tools.
+- Time template variables now use the session start time so the configured system prompt remains stable and cache-friendly.
+- The fixed agent-loop and untrusted-data rules moved into the stable core instruction prefix.
+- The runtime permission text stays stable when a request reaches the tool-round limit, avoiding an unnecessary cache miss on the final request.
+- Compaction summaries are appended to the previous summary so the cached prefix remains reusable after context compaction.
 
 ## 0.5.0 - 2026-07-25
 

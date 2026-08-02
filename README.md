@@ -148,7 +148,7 @@ The configured system prompt supports a small template language. Existing plain-
 | Syntax | Meaning |
 |---|---|
 | `{{cwd}}` | Current working directory |
-| `{{date}}`, `{{time}}`, `{{datetime}}` | Local date and time |
+| `{{date}}`, `{{time}}`, `{{datetime}}` | Session-start date and time, stable for cache reuse |
 | `{{hostname}}`, `{{user}}`, `{{shell}}` | Machine and user context |
 | `{{os}}`, `{{arch}}` | Platform name and architecture |
 | `{{model}}`, `{{provider}}`, `{{provider_name}}`, `{{protocol}}` | Active model and provider |
@@ -365,6 +365,8 @@ Before every request, `ask` estimates the size of:
 - Reserved output tokens
 
 Token estimation is Unicode-aware and calibrated by model family, so CJK text, code, tool schemas, and protocol-specific message overhead do not all share the same rough byte-per-token ratio. When the prediction reaches the configured share of the model context window, `ask` asks the active model to create a structured working memory with session metadata and explicit instructions to merge any previous summary. The default threshold is 70%. The original transcript remains in SQLite; only the active API request view advances to the summary and recent turns.
+
+The prompt layout is cache-friendly: the fixed core instruction block and configured system prompt stay at the front, message history is append-only, and tool schemas keep a stable order for each access mode. The runtime permission text stays stable even when a request reaches the tool-round limit. Time template variables use the session start time rather than changing per request. Anthropic requests add `cache_control` breakpoints on the system prompt, the first user message, and the final message so provider-side prompt caching can reuse the stable prefix. Compaction summaries are appended rather than replaced so the previous summary remains in the cached prefix.
 
 ## File Locations
 

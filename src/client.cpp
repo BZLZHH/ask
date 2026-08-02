@@ -175,8 +175,16 @@ ChatResponse parse_openai(const Json::Value& root) {
 
 Json::Value anthropic_messages(const std::vector<Message>& messages) {
   Json::Value output(Json::arrayValue);
+  std::size_t first_user = messages.size();
+  for (std::size_t index = 0; index < messages.size(); ++index) {
+    if (messages[index].role == "user") {
+      first_user = index;
+      break;
+    }
+  }
   for (std::size_t index = 0; index < messages.size(); ++index) {
     const auto& message = messages[index];
+    const bool cacheable = index == first_user || index + 1 == messages.size();
     if (message.role == "assistant") {
       Json::Value item(Json::objectValue);
       item["role"] = "assistant";
@@ -185,6 +193,7 @@ Json::Value anthropic_messages(const std::vector<Message>& messages) {
         Json::Value text(Json::objectValue);
         text["type"] = "text";
         text["text"] = message.content;
+        if (cacheable) text["cache_control"]["type"] = "ephemeral";
         content.append(text);
       }
       for (const auto& call : message.tool_calls) {
@@ -210,16 +219,38 @@ Json::Value anthropic_messages(const std::vector<Message>& messages) {
       result["type"] = "tool_result";
       result["tool_use_id"] = message.tool_call_id;
       result["content"] = message.content;
+      if (cacheable) result["cache_control"]["type"] = "ephemeral";
       content.append(result);
       item["content"] = content;
       output.append(item);
     } else if (message.role != "system") {
       Json::Value item(Json::objectValue);
       item["role"] = "user";
-      item["content"] = message.content;
+      if (cacheable && !message.content.empty()) {
+        Json::Value content(Json::arrayValue);
+        Json::Value text(Json::objectValue);
+        text["type"] = "text";
+        text["text"] = message.content;
+        text["cache_control"]["type"] = "ephemeral";
+        content.append(text);
+        item["content"] = content;
+      } else {
+        item["content"] = message.content;
+      }
       output.append(item);
     }
   }
+  return output;
+}
+
+Json::Value anthropic_system(const std::string& system_prompt) {
+  Json::Value output(Json::arrayValue);
+  if (system_prompt.empty()) return output;
+  Json::Value block(Json::objectValue);
+  block["type"] = "text";
+  block["text"] = system_prompt;
+  block["cache_control"]["type"] = "ephemeral";
+  output.append(block);
   return output;
 }
 
@@ -515,7 +546,8 @@ ChatResponse ChatClient::complete(const Provider& provider,
     if (!key.empty()) headers.push_back("x-api-key: " + key);
     headers.push_back("anthropic-version: 2023-06-01");
     body["model"] = model;
-    body["system"] = system_prompt;
+    const auto system = anthropic_system(system_prompt);
+    body["system"] = system.empty() ? Json::Value("") : system;
     body["messages"] = anthropic_messages(messages);
     body["max_tokens"] = max_output_tokens;
     if (capabilities.tools && tools.isArray() && !tools.empty()) body["tools"] = anthropic_tools(tools);
@@ -640,7 +672,8 @@ ChatResponse ChatClient::stream(const Provider& provider,
     if (!key.empty()) headers.push_back("x-api-key: " + key);
     headers.push_back("anthropic-version: 2023-06-01");
     body["model"] = model;
-    body["system"] = system_prompt;
+    const auto system = anthropic_system(system_prompt);
+    body["system"] = system.empty() ? Json::Value("") : system;
     body["messages"] = anthropic_messages(messages);
     body["max_tokens"] = max_output_tokens;
     body["stream"] = true;
