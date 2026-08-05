@@ -27,10 +27,10 @@ Current version: `0.6.0`
 
 ## Design Documents
 
-- [ （ ）](docs/QUICKSTART.zh-CN.md)： 、configuration through Ordinary 、Do and AI Conference task 。
-- [AI Conference ](docs/AI_CONFERENCE.md)： AI conference 、conference 、TUI、 、tool authorization and data 。
+- [Quick Start](docs/QUICKSTART.md): Task-oriented guide covering build, configuration, basic chat, Do mode, and AI Conference.
+- [AI Conference Specification](docs/AI_CONFERENCE.md): Product boundaries, roles, TUI, keyboard controls, tool authorization, and data model for the standalone multi-AI conference workflow.
 
-AI Conference Moderator advance default 。 conference `Configure autopilot permissions` or `/autopilot`， advance or 4/8/12/20 Rounds， authorization `write_file`、 `run_command`、`fetch_http`、`browse_page` or `web_search`。 through Moderator requestUserdecided、completeconference、User or ； depth Moderator check ， ENDconference。 using tool； ，User 、 or authorization 。
+The moderator autopilot is off by default. Enable it via the conference's `Configure autopilot permissions` or `/autopilot` to choose unlimited automatic turns or 4/8/12/20 rounds, with per-tool pre-authorization for `write_file`, sandboxed `run_command`, `fetch_http`, `browse_page`, or `web_search`. Unlimited mode runs until the moderator explicitly requests a user decision, the conference completes, the user interrupts, or pauses; phase depth only triggers moderator summary checkpoints and never silently ends the conference. When unchecked, autopilot uses read-only tools only; it never escalates command permissions, and the user can pause, interject, or revoke authorization at any time.
 
 ## Provider Protocols
 
@@ -57,14 +57,14 @@ Fedora:
 
 ```sh
 sudo dnf install gcc-c++ cmake ninja-build pkgconf-pkg-config \
- libcurl-devel jsoncpp-devel sqlite-devel ncurses-devel libedit-devel bubblewrap
+  libcurl-devel jsoncpp-devel sqlite-devel ncurses-devel libedit-devel bubblewrap
 ```
 
 Debian or Ubuntu:
 
 ```sh
 sudo apt install build-essential cmake ninja-build pkg-config \
- libcurl4-openssl-dev libjsoncpp-dev libsqlite3-dev libncursesw5-dev libedit-dev bubblewrap
+  libcurl4-openssl-dev libjsoncpp-dev libsqlite3-dev libncursesw5-dev libedit-dev bubblewrap
 ```
 
 Arch Linux:
@@ -169,25 +169,25 @@ Available conditions are `do_mode`, `read_only`, `has_tools`, and `streaming`, p
 
 ```text
 Usage:
- ask [options] [prompt ...]
- ask --do [options] [prompt ...]
- ask --config
- ask resume [session-id] [--provider ID] [--model MODEL]
- ask conference [goal] [--type advisory|deliverable] [--provider ID] [--model MODEL]
- ask conference resume [conference-id]
+  ask [options] [prompt ...]
+  ask --do [options] [prompt ...]
+  ask --config
+  ask resume [session-id] [--provider ID] [--model MODEL]
+  ask conference [goal] [--type advisory|deliverable] [--provider ID] [--model MODEL]
+  ask conference resume [conference-id]
 
 Options:
- -p, --provider ID Override the provider for this session
- -m, --model MODEL Override the model for this session
- --do Start with workspace tools enabled
- -i, --interactive Enter the REPL even when input was piped
- --no-repl Exit after one response
- --no-stream Wait for the complete response before printing
- --json Emit one JSON object and disable streaming
- -q, --quiet Hide tool progress messages
- --config Open the settings TUI
- -h, --help Show help
- --version Show the version
+  -p, --provider ID    Override the provider for this session
+  -m, --model MODEL    Override the model for this session
+      --do             Start with workspace tools enabled
+  -i, --interactive    Enter the REPL even when input was piped
+      --no-repl        Exit after one response
+      --no-stream      Wait for the complete response before printing
+      --json           Emit one JSON object and disable streaming
+  -q, --quiet          Hide tool progress messages
+      --config         Open the settings TUI
+  -h, --help           Show help
+      --version        Show the version
 ```
 
 ### AI Conference
@@ -284,18 +284,18 @@ JSON output has this shape:
 
 ```json
 {
- "session": "20260719-120000-abcdef",
- "provider": "deepseek",
- "model": "deepseek-v4-flash",
- "text": "...",
- "finish_reason": "stop",
- "usage": {
- "prompt_tokens": 42,
- "completion_tokens": 18,
- "total_tokens": 60,
- "cached_tokens": 36,
- "cache_creation_tokens": 12
- }
+  "session": "20260719-120000-abcdef",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "text": "...",
+  "finish_reason": "stop",
+  "usage": {
+    "prompt_tokens": 42,
+    "completion_tokens": 18,
+    "total_tokens": 60,
+    "cached_tokens": 36,
+    "cache_creation_tokens": 12
+  }
 }
 ```
 
