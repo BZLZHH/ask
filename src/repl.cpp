@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
+#include <termios.h>
 #include <unistd.h>
 
 #include "ask/prompt_template.hpp"
@@ -759,9 +760,34 @@ std::string Conversation::read_multiline(const std::string& first) {
   return result;
 }
 
+int clear_line_on_interrupt(int, int) {
+  if (rl_line_buffer && rl_point > 0) {
+    rl_delete_text(0, rl_point);
+    rl_point = 0;
+    rl_redisplay();
+  }
+  return 0;
+}
+
+void disable_sigint_prep(int meta_flag) {
+  rl_prep_terminal(meta_flag);
+  struct termios settings {};
+  if (::tcgetattr(STDIN_FILENO, &settings) == 0) {
+    settings.c_lflag &= ~static_cast<tcflag_t>(ISIG);
+    ::tcsetattr(STDIN_FILENO, TCSANOW, &settings);
+  }
+}
+
 int Conversation::repl() {
   rl_readline_name = "ask";
   rl_attempted_completion_function = command_completion;
+  // Handle Ctrl-C deterministically at the byte level: disable ISIG while
+  // readline owns the terminal and bind ^C to clear the current line, so a
+  // partially typed input is discarded synchronously instead of racing with
+  // SIGINT delivery against the next byte.
+  rl_prep_term_function = disable_sigint_prep;
+  rl_deprep_term_function = rl_deprep_terminal;
+  rl_bind_key(CTRL('C'), clear_line_on_interrupt);
   using_history();
   const auto history = history_path();
   read_history(history.c_str());
