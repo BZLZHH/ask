@@ -1,6 +1,7 @@
 #include "ask/http.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <exception>
 #include <mutex>
@@ -58,8 +59,8 @@ size_t stream_callback(char* data, size_t size, size_t count, void* userdata) {
 }
 
 int progress_callback(void* userdata, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
-  const auto* cancelled = static_cast<const volatile std::sig_atomic_t*>(userdata);
-  return cancelled && *cancelled ? 1 : 0;
+  const auto* cancelled = static_cast<const std::atomic<int>*>(userdata);
+  return cancelled && cancelled->load(std::memory_order_relaxed) ? 1 : 0;
 }
 
 size_t header_callback(char* data, size_t size, size_t count, void* userdata) {
@@ -156,7 +157,7 @@ HttpResponse HttpClient::request_stream(
     const std::function<bool(std::string_view)>& on_chunk,
     int timeout_seconds,
     std::size_t max_bytes,
-    const volatile std::sig_atomic_t* cancelled) const {
+    const std::atomic<int>* cancelled) const {
   CURL* curl = curl_easy_init();
   if (!curl) throw std::runtime_error("cannot create HTTP client");
 
@@ -195,7 +196,7 @@ HttpResponse HttpClient::request_stream(
   curl_easy_cleanup(curl);
 
   if (context.error) std::rethrow_exception(context.error);
-  if (cancelled && *cancelled) throw RequestCancelled();
+  if (cancelled && cancelled->load(std::memory_order_relaxed)) throw RequestCancelled();
   if (code != CURLE_OK) {
     if (context.overflow) throw std::runtime_error("HTTP response exceeded size limit");
     if (context.stopped) throw RequestCancelled();

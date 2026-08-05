@@ -220,7 +220,8 @@ class ConferenceEngine {
   void resolve_decision(std::size_t index, const std::string& outcome);
   // Normal rounds are read-only. Full access is available only after an explicit
   // user approval in the conference UI, and applies to this one speaker turn.
-  void advance(bool allow_write = false);
+  // Returns false when a generation is already running and the advance was not started.
+  bool advance(bool allow_write = false);
   // Persists explicit user authorization for autonomous progression. A zero
   // round limit means continue until a visible stop condition occurs.
   // Unknown or read-only names are discarded; only full-access tools are kept.
@@ -252,7 +253,7 @@ class ConferenceEngine {
   void absorb_structured_output(const ConferenceParticipant& participant, const std::string& content);
   void advance_with_policy(bool allow_write, const std::set<std::string>& allowed_full_tools,
                            bool autopilot);
-  void launch_task(std::function<void()> task);
+  bool launch_task(std::function<void()> task);
   void run_autopilot_task();
   void generate_setup_with_moderator();
   void maybe_compact_history();
@@ -272,7 +273,9 @@ class ConferenceEngine {
   // A response begun under an older revision is retained as history but is
   // never allowed to mutate structured meeting state.
   std::atomic_uint64_t context_revision_{0};
-  volatile std::sig_atomic_t cancel_requested_{0};
+  // Set from the UI thread and read by the worker thread (and by curl progress
+  // callbacks); must be atomic, not sig_atomic_t, to avoid a cross-thread race.
+  std::atomic<int> cancel_requested_{0};
   std::optional<std::size_t> active_stream_event_;
 };
 

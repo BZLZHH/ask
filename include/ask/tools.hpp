@@ -13,6 +13,7 @@ struct CommandResult {
   int exit_code{-1};
   std::string output;
   bool timed_out{false};
+  bool truncated{false};
 };
 
 class ToolExecutor {

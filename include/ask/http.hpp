@@ -1,6 +1,6 @@
 #pragma once
 
-#include <csignal>
+#include <atomic>
 #include <functional>
 #include <map>
 #include <stdexcept>
@@ -43,7 +43,7 @@ class HttpClient {
       const std::function<bool(std::string_view)>& on_chunk,
       int timeout_seconds = 120,
       std::size_t max_bytes = 16ULL * 1024 * 1024,
-      const volatile std::sig_atomic_t* cancelled = nullptr) const;
+      const std::atomic<int>* cancelled = nullptr) const;
 
   static std::string url_encode(const std::string& input);
 };

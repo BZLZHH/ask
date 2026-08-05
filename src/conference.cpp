@@ -374,12 +374,16 @@ std::optional<Conference> conference_from_json(const Json::Value& value) {
   }
   for (const auto& item : value["events"]) {
     if (!item.isObject()) return std::nullopt;
+    auto state = item.get("state", "completed").asString();
+    // A persisted conference never has a live worker thread; any event still in
+    // the "streaming" state was interrupted by a crash or kill. Normalize it so
+    // the resume view does not show a permanently stuck live contribution.
+    if (state == "streaming") state = "interrupted";
     conference.events.push_back({item.get("id", "").asString(),
       item.get("timestamp", 0).asInt64(), item.get("round", 0).asInt(),
       item.get("type", "").asString(), item.get("author", "").asString(),
       item.get("role", "").asString(), item.get("content", "").asString(),
-      item.get("detail", "").asString(),
-    item.get("state", "completed").asString()});
+      item.get("detail", "").asString(), std::move(state)});
   }
   conference.compacted_until = std::min(conference.compacted_until, conference.events.size());
   return conference;
@@ -868,6 +872,17 @@ void ConferenceEngine::update_type(ConferenceType type, TypeSource source) {
   conference_.deliverables.clear();
   conference_.context_summary.clear();
   conference_.compacted_until = 0;
+  // The old type's discussion artifacts are type-specific and would leak into the
+  // new type's prompts and summary; reset them so the switched conference starts
+  // from a clean slate (identity, goal, and provider binding are preserved).
+  conference_.facts.clear();
+  conference_.open_questions.clear();
+  conference_.decisions.clear();
+  conference_.action_items.clear();
+  conference_.user_questions.clear();
+  conference_.events.clear();
+  conference_.next_speaker_id.clear();
+  conference_.next_speaker_reason.clear();
   apply_conference_type_defaults(conference_);
   conference_.status = ConferenceStatus::awaiting_setup;
   ++conference_.setup.version;
@@ -945,6 +960,11 @@ void ConferenceEngine::interrupt(const std::string& content) {
       record("user", "User", "", cleaned, "High-priority interjection");
       if (conference_.status == ConferenceStatus::running || conference_.status == ConferenceStatus::concluding) {
         conference_.status = ConferenceStatus::awaiting_user;
+      } else if (conference_.status == ConferenceStatus::awaiting_user) {
+        // The user supplied the input that was being awaited (e.g. after
+        // AUTOPILOT: await_user with no pending structured question); resume so
+        // the moderator can incorporate it instead of leaving the meeting stuck.
+        conference_.status = ConferenceStatus::running;
       }
       if (generating_.load()) {
         cancel_requested_ = 1;
@@ -1159,6 +1179,7 @@ active_messages.push_back({"user", event_text.str(), {}, {}});
     const auto active_tokens =
     estimate_tokens(provider(moderator), model, active_messages, "", Json::Value());
     if (active_count <= 18 && active_tokens <= 8000) return;
+    if (conference_.events.size() <= 12) return;
     cut = std::min(begin + 6, conference_.events.size() - 12);
     if (cut <= begin) return;
     snapshot_for_compaction = conference_;
@@ -1532,8 +1553,8 @@ void ConferenceEngine::absorb_structured_output(const ConferenceParticipant& par
   }
 }
 
-void ConferenceEngine::advance(bool allow_write) {
-launch_task([this, allow_write] { advance_with_policy(allow_write, {}, false); });
+bool ConferenceEngine::advance(bool allow_write) {
+  return launch_task([this, allow_write] { advance_with_policy(allow_write, {}, false); });
 }
 
 bool ConferenceEngine::apply_moderator_directives(const std::string& content) {
@@ -1688,6 +1709,10 @@ bool autopilot) {
     ++conference_.agenda_round;
   }
   const auto participant_model = participant.model.empty() ? fallback_model : participant.model;
+  // Snapshot the context revision at request start. If the user updates the
+  // meeting while this response is in flight, the response is kept as history
+  // but must not mutate structured state built from a different context.
+  const auto request_revision = context_revision_.load();
   auto turn_settings = config_.settings;
   try {
     maybe_compact_history();
@@ -1829,19 +1854,29 @@ bool autopilot) {
       const auto completed_content = trim(response.content);
       if (!completed_content.empty()) {
         if (cancel_requested_) throw RequestCancelled();
-        absorb_structured_output(participant, completed_content);
-        if (participant.kind == "moderator" && !cancel_requested_) {
-          const bool scheduled = apply_moderator_directives(completed_content);
-          if (!scheduled && !cancel_requested_) {
-            std::lock_guard lock(mutex_);
-            const auto next = std::find_if(conference_.participants.begin(), conference_.participants.end(),
-          [](const auto& item) { return item.kind != "moderator" && item.enabled; });
-            if (next != conference_.participants.end()) {
-              conference_.next_speaker_id = next->id;
-              conference_.next_speaker_reason = "The moderator did not specify the next speaker; the system falls back to the first enabled advisor seat.";
-              conference_.return_to_moderator = true;
-              record("schedule_fallback", "System", "", "The moderator did not specify the next speaker; scheduled: " + next->name,
-              conference_.next_speaker_reason);
+        if (context_revision_.load() != request_revision) {
+          // The meeting context changed while this response streamed. Keep the
+          // contribution visible in the timeline, but do not let its directives
+          // mutate structured state derived from an older context.
+          std::lock_guard lock(mutex_);
+          record("stale_response", "System", "",
+                 "A response started before a conference update was kept as history but not applied to meeting state.",
+                 participant.name);
+        } else {
+          absorb_structured_output(participant, completed_content);
+          if (participant.kind == "moderator" && !cancel_requested_) {
+            const bool scheduled = apply_moderator_directives(completed_content);
+            if (!scheduled && !cancel_requested_) {
+              std::lock_guard lock(mutex_);
+              const auto next = std::find_if(conference_.participants.begin(), conference_.participants.end(),
+            [](const auto& item) { return item.kind != "moderator" && item.enabled; });
+              if (next != conference_.participants.end()) {
+                conference_.next_speaker_id = next->id;
+                conference_.next_speaker_reason = "The moderator did not specify the next speaker; the system falls back to the first enabled advisor seat.";
+                conference_.return_to_moderator = true;
+                record("schedule_fallback", "System", "", "The moderator did not specify the next speaker; scheduled: " + next->name,
+                conference_.next_speaker_reason);
+              }
             }
           }
         }
@@ -1983,6 +2018,16 @@ void ConferenceEngine::run_autopilot() {
 launch_task([this] { run_autopilot_task(); });
 }
 
+namespace {
+bool has_unresolved_decision(const Conference& conference) {
+  return std::any_of(conference.decisions.begin(), conference.decisions.end(),
+                     [](const std::string& decision) {
+                       return decision.rfind("[confirmed] ", 0) != 0 &&
+                              decision.rfind("[rejected] ", 0) != 0;
+                     });
+}
+}  // namespace
+
 void ConferenceEngine::run_autopilot_task() {
   check_user_question_timeouts();
   auto current = snapshot();
@@ -1992,7 +2037,7 @@ void ConferenceEngine::run_autopilot_task() {
   if (current.status != ConferenceStatus::running) return;
   const auto selected = selected_autopilot_tools(current.autopilot_preauthorized_tools);
   const bool full_access = !selected.empty();
-  record("autopilot_start", "Moderator", "Moderator", "Moderatorstarts autopilot conference advancement.",
+  record("autopilot_start", "Moderator", "Moderator", "The moderator starts autopilot conference advancement.",
   "round_limit: " + std::to_string(current.autopilot_round_limit));
   int completed = 0;
   for (; current.autopilot_round_limit == 0 || completed < current.autopilot_round_limit; ++completed) {
@@ -2005,9 +2050,18 @@ void ConferenceEngine::run_autopilot_task() {
     }
     current = snapshot();
     if (current.status != ConferenceStatus::running) break;
-    // Candidate decisions and open questions are normal conference output,
-    // not a reason to abandon an autonomous agenda. The moderator can pause
-    // explicitly with AUTOPILOT: await_user when a real user-only choice remains.
+    // Candidate decisions and open questions are normal conference output, not a
+    // reason to abandon an autonomous agenda. The moderator can pause explicitly
+    // with AUTOPILOT: await_user when a real user-only choice remains. When the
+    // user opted into stop_for_decisions, an unresolved candidate decision pauses
+    // autopilot so the user can confirm, reject, or request more evidence.
+    if (current.autopilot_stop_for_decisions && has_unresolved_decision(current)) {
+      std::lock_guard lock(mutex_);
+      conference_.status = ConferenceStatus::awaiting_user;
+      record("autopilot_pause", "Moderator", "Moderator",
+             "Autopilot stopped for a candidate decision awaiting user confirmation.");
+      break;
+    }
   }
   current = snapshot();
   if (current.status == ConferenceStatus::running && current.autopilot_round_limit > 0 &&
@@ -2021,8 +2075,8 @@ void ConferenceEngine::run_autopilot_task() {
   persist();
 }
 
-void ConferenceEngine::launch_task(std::function<void()> task) {
-  if (generating_.exchange(true)) return;
+bool ConferenceEngine::launch_task(std::function<void()> task) {
+  if (generating_.exchange(true)) return false;
   cancel_requested_ = 0;
   if (worker_.joinable()) worker_.join();
   worker_ = std::thread([this, task = std::move(task)]() mutable {
@@ -2033,6 +2087,7 @@ void ConferenceEngine::launch_task(std::function<void()> task) {
     }
     generating_ = false;
   });
+  return true;
 }
 
 void ConferenceEngine::mark_interrupted_event(std::size_t event_index, const std::string& reason) {

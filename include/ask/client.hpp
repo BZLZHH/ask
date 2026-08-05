@@ -1,6 +1,6 @@
 #pragma once
 
-#include <csignal>
+#include <atomic>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -31,7 +31,7 @@ class ChatClient {
                       const Json::Value& tools,
                       int max_output_tokens_override,
                       const TextDelta& on_text,
-                      const volatile std::sig_atomic_t* cancelled = nullptr) const;
+                      const std::atomic<int>* cancelled = nullptr) const;
 
   std::vector<std::string> fetch_models(const Provider& provider) const;
 

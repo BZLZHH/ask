@@ -285,10 +285,10 @@ void test_conferences(const std::filesystem::path& root) {
   store.save(conference);
   saved = store.load(conference.id);
   const bool stream_persisted = saved && std::any_of(saved->events.begin(), saved->events.end(),
-      [](const auto& event) { return event.id == "stream-test" && event.state == "streaming" &&
+      [](const auto& event) { return event.id == "stream-test" && event.state == "interrupted" &&
                                       event.content == "partial"; });
   expect(stream_persisted,
-         "streaming conference events persist with identity and partial content");
+         "partial streaming event content persists and is normalized to interrupted on load");
   expect(saved && saved->user_questions.size() == 1 &&
              saved->user_questions.front().type == "objective" &&
              saved->user_questions.front().options == std::vector<std::string>{"Weekday", "Weekend"},

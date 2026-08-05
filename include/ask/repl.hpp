@@ -1,6 +1,6 @@
 #pragma once
 
-#include <csignal>
+#include <atomic>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -56,7 +56,7 @@ class Conversation {
   Usage last_usage_;
   std::size_t last_estimated_prompt_tokens_{0};
   std::size_t last_estimated_cacheable_tokens_{0};
-  volatile std::sig_atomic_t cancelled_{0};
+  std::atomic<int> cancelled_{0};
 };
 
 }  // namespace ask

@@ -181,16 +181,18 @@ TemplateContext build_template_context(const Provider& provider,
   return context;
 }
 
-volatile std::sig_atomic_t* active_cancellation = nullptr;
+std::atomic<int>* active_cancellation = nullptr;
 
 void cancel_generation(int) {
-  if (active_cancellation) *active_cancellation = 1;
+  // Relaxed store on a lock-free int is async-signal-safe in practice on the
+  // platforms this targets (it compiles to a plain store).
+  if (active_cancellation) active_cancellation->store(1, std::memory_order_relaxed);
 }
 
 class GenerationSignalGuard {
  public:
-  explicit GenerationSignalGuard(volatile std::sig_atomic_t& cancelled) {
-    cancelled = 0;
+  explicit GenerationSignalGuard(std::atomic<int>& cancelled) {
+    cancelled.store(0, std::memory_order_relaxed);
     active_cancellation = &cancelled;
     struct sigaction action {};
     action.sa_handler = cancel_generation;
@@ -761,9 +763,12 @@ std::string Conversation::read_multiline(const std::string& first) {
 }
 
 int clear_line_on_interrupt(int, int) {
-  if (rl_line_buffer && rl_point > 0) {
-    rl_delete_text(0, rl_point);
+  if (rl_line_buffer && rl_end > 0) {
+    // Clear the whole line, not just up to the cursor, so text after the cursor
+    // is discarded as well when ^C is pressed mid-line.
+    rl_delete_text(0, rl_end);
     rl_point = 0;
+    rl_end = 0;
     rl_redisplay();
   }
   return 0;

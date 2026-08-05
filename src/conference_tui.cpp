@@ -748,8 +748,11 @@ void handle_input(ConferenceEngine& engine, const std::string& input, std::strin
     if (engine.snapshot().status == ConferenceStatus::awaiting_setup || engine.snapshot().status == ConferenceStatus::draft) {
       notice = "Review and approve the meeting plan before advancing"; return;
     }
-    if (engine.snapshot().status == ConferenceStatus::running) { engine.advance(); notice = "AI speaker started in background"; }
-    else notice = "Start or resume the conference before advancing";
+    if (engine.snapshot().status == ConferenceStatus::running) {
+      notice = engine.advance() ? "AI speaker started in background" : "A speaker is already generating; wait for it to finish";
+    } else {
+      notice = "Start or resume the conference before advancing";
+    }
     return;
   }
   if (command == "/execute") {
@@ -761,8 +764,7 @@ void handle_input(ConferenceEngine& engine, const std::string& input, std::strin
     if (confirm("Authorize execution turn",
                 "The next participant may use full workspace and external tools only for this turn. Tool requests and results will remain in the meeting timeline.",
                 "Authorize execution")) {
-      engine.advance(true);
-      notice = "Authorized execution started in background";
+      notice = engine.advance(true) ? "Authorized execution started in background" : "A speaker is already generating; wait for it to finish";
     }
     return;
   }
@@ -1040,8 +1042,11 @@ void control(ConferenceEngine& engine, int selection, std::string& notice) {
       notice = "Conference status updated"; break;
     case 1:
       if (conference.status == ConferenceStatus::draft) engine.start();
-      if (engine.snapshot().status == ConferenceStatus::running) { engine.advance(); notice = "AI speaker started in background"; }
-      else notice = "Start or resume the conference before advancing";
+      if (engine.snapshot().status == ConferenceStatus::running) {
+        notice = engine.advance() ? "AI speaker started in background" : "A speaker is already generating; wait for it to finish";
+      } else {
+        notice = "Start or resume the conference before advancing";
+      }
       break;
     case 2: review_meeting_setup(engine, notice); break;
     case 3: choose_next_speaker(engine, notice); break;

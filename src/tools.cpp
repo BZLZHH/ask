@@ -19,6 +19,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -101,18 +102,26 @@ bool path_is_within(const std::filesystem::path& root, const std::filesystem::pa
   return true;
 }
 
+bool is_public_ipv4_bytes(const unsigned char* bytes) {
+  const unsigned first = bytes[0];
+  const unsigned second = bytes[1];
+  if (first == 0 || first == 10 || first == 127 || first >= 224) return false;
+  if (first == 100 && second >= 64 && second <= 127) return false;
+  if (first == 169 && second == 254) return false;
+  if (first == 172 && second >= 16 && second <= 31) return false;
+  if (first == 192 && second == 168) return false;
+  if (first == 198 && (second == 18 || second == 19)) return false;
+  return true;
+}
+
 bool is_public_address(const sockaddr* address) {
   if (address->sa_family == AF_INET) {
-    auto value = ntohl(reinterpret_cast<const sockaddr_in*>(address)->sin_addr.s_addr);
-    const unsigned first = value >> 24;
-    const unsigned second = (value >> 16) & 0xff;
-    if (first == 0 || first == 10 || first == 127 || first >= 224) return false;
-    if (first == 100 && second >= 64 && second <= 127) return false;
-    if (first == 169 && second == 254) return false;
-    if (first == 172 && second >= 16 && second <= 31) return false;
-    if (first == 192 && second == 168) return false;
-    if (first == 198 && (second == 18 || second == 19)) return false;
-    return true;
+    const auto value = ntohl(reinterpret_cast<const sockaddr_in*>(address)->sin_addr.s_addr);
+    const unsigned char bytes[4] = {static_cast<unsigned char>(value >> 24),
+                                    static_cast<unsigned char>((value >> 16) & 0xff),
+                                    static_cast<unsigned char>((value >> 8) & 0xff),
+                                    static_cast<unsigned char>(value & 0xff)};
+    return is_public_ipv4_bytes(bytes);
   }
   if (address->sa_family == AF_INET6) {
     const auto& bytes = reinterpret_cast<const sockaddr_in6*>(address)->sin6_addr.s6_addr;
@@ -123,6 +132,15 @@ bool is_public_address(const sockaddr* address) {
         IN6_IS_ADDR_LINKLOCAL(&reinterpret_cast<const sockaddr_in6*>(address)->sin6_addr) ||
         IN6_IS_ADDR_MULTICAST(&reinterpret_cast<const sockaddr_in6*>(address)->sin6_addr)) return false;
     if ((bytes[0] & 0xfe) == 0xfc) return false;
+    // IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible (::a.b.c.d) forms embed an
+    // IPv4 address that must be held to the same rules as a native IPv4 literal.
+    const bool v4_mapped = bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 0 && bytes[3] == 0 &&
+                           bytes[4] == 0 && bytes[5] == 0 && bytes[6] == 0 && bytes[7] == 0 &&
+                           bytes[8] == 0 && bytes[9] == 0 && bytes[10] == 0xff && bytes[11] == 0xff;
+    const bool v4_compatible = bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 0 && bytes[3] == 0 &&
+                               bytes[4] == 0 && bytes[5] == 0 && bytes[6] == 0 && bytes[7] == 0 &&
+                               bytes[8] == 0 && bytes[9] == 0 && bytes[10] == 0 && bytes[11] == 0;
+    if (v4_mapped || v4_compatible) return is_public_ipv4_bytes(&bytes[12]);
     return true;
   }
   return false;
@@ -423,6 +441,16 @@ Json::Value ToolExecutor::schemas(Access access, bool allow_escalation,
   return tools;
 }
 
+namespace {
+void reject_hard_linked_file(const std::filesystem::path& path) {
+  struct stat info {};
+  if (::stat(path.c_str(), &info) != 0) return;
+  if (info.st_nlink > 1) {
+    throw std::runtime_error("refusing to access a hard-linked file");
+  }
+}
+}  // namespace
+
 std::filesystem::path ToolExecutor::checked_path(const std::string& input, bool for_create) const {
   if (input.empty()) throw std::runtime_error("path cannot be empty");
   std::filesystem::path relative(input);
@@ -477,6 +505,7 @@ std::string ToolExecutor::read_file(const Json::Value& args) {
   if (std::filesystem::is_symlink(path) || !std::filesystem::is_regular_file(path)) {
     throw std::runtime_error("path is not a regular file");
   }
+  reject_hard_linked_file(path);
   const auto offset = std::max<Json::Int64>(0, args.get("offset", 0).asInt64());
   const auto limit = std::clamp<Json::Int64>(args.get("limit", 262144).asInt64(), 1, 1048576);
   std::ifstream input(path, std::ios::binary);
@@ -485,11 +514,18 @@ std::string ToolExecutor::read_file(const Json::Value& args) {
   std::string content(static_cast<std::size_t>(limit), '\0');
   input.read(content.data(), static_cast<std::streamsize>(limit));
   content.resize(static_cast<std::size_t>(input.gcount()));
+  // A read of exactly `limit` bytes may still be a complete file (EOF exactly at
+  // the boundary); probe one extra byte to distinguish truncation from EOF.
+  bool truncated = false;
+  if (content.size() == static_cast<std::size_t>(limit)) {
+    char extra = 0;
+    truncated = input.read(&extra, 1).gcount() > 0;
+  }
   Json::Value data(Json::objectValue);
   data["path"] = std::filesystem::relative(path, root_).string();
   data["offset"] = static_cast<Json::Int64>(offset);
   data["content"] = content;
-  data["truncated"] = !input.eof();
+  data["truncated"] = truncated;
   return json_string(ok_result(data));
 }
 
@@ -502,8 +538,11 @@ std::string ToolExecutor::write_file(const Json::Value& args) {
   std::filesystem::create_directories(path.parent_path(), ec);
   if (ec) throw std::runtime_error("cannot create parent directory: " + ec.message());
   path = checked_path(relative, true);
-  if (std::filesystem::exists(path) && std::filesystem::is_symlink(path)) {
-    throw std::runtime_error("refusing to write through a symlink");
+  if (std::filesystem::exists(path)) {
+    if (std::filesystem::is_symlink(path)) {
+      throw std::runtime_error("refusing to write through a symlink");
+    }
+    reject_hard_linked_file(path);
   }
   const bool append = args.get("append", false).asBool();
   const int flags = O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW | (append ? O_APPEND : O_TRUNC);
@@ -587,6 +626,11 @@ std::string ToolExecutor::search_text(const Json::Value& args) {
     }
     if (!std::filesystem::is_regular_file(status) ||
         entry.file_size(error) > 4ULL * 1024 * 1024) {
+      continue;
+    }
+    try {
+      reject_hard_linked_file(entry.path());
+    } catch (const std::exception&) {
       continue;
     }
     std::ifstream input(entry.path());
@@ -839,10 +883,10 @@ CommandResult run_program(std::vector<std::string> program,
       const std::string root = cwd.string();
       arguments = {
           "/usr/bin/bwrap", "--die-with-parent", "--new-session", "--unshare-pid",
-          "--unshare-uts", "--unshare-ipc", "--clearenv", "--setenv", "PATH",
-          "/usr/local/bin:/usr/bin", "--setenv", "HOME", root, "--setenv", "LANG",
-          "C.UTF-8", "--ro-bind", "/usr", "/usr", "--ro-bind-try", "/lib", "/lib",
-          "--ro-bind-try", "/lib64", "/lib64", "--ro-bind", "/etc", "/etc",
+          "--unshare-uts", "--unshare-ipc", "--unshare-net", "--clearenv", "--setenv",
+          "PATH", "/usr/local/bin:/usr/bin", "--setenv", "HOME", root, "--setenv",
+          "LANG", "C.UTF-8", "--ro-bind", "/usr", "/usr", "--ro-bind-try", "/lib",
+          "/lib", "--ro-bind-try", "/lib64", "/lib64", "--ro-bind", "/etc", "/etc",
           "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
           readonly_workspace ? "--ro-bind" : "--bind", root, root, "--chdir", root};
       arguments.insert(arguments.end(), program.begin(), program.end());
@@ -870,11 +914,16 @@ CommandResult run_program(std::vector<std::string> program,
   bool done = false;
   while (!done) {
     std::array<char, 8192> buffer{};
-    while (result.output.size() < max_output) {
-      auto count = ::read(pipes[0], buffer.data(),
-                          std::min(buffer.size(), max_output - result.output.size()));
-      if (count > 0) result.output.append(buffer.data(), static_cast<std::size_t>(count));
-      else break;
+    // Keep draining even after the output cap is reached so a long-running
+    // child never blocks on a full pipe and then gets misreported as a timeout.
+    while (true) {
+      auto count = ::read(pipes[0], buffer.data(), buffer.size());
+      if (count <= 0) break;
+      if (result.output.size() < max_output) {
+        const auto room = max_output - result.output.size();
+        result.output.append(buffer.data(), std::min<std::size_t>(count, room));
+        if (result.output.size() >= max_output) result.truncated = true;
+      }
     }
     int status = 0;
     auto waited = ::waitpid(pid, &status, WNOHANG);
@@ -939,6 +988,7 @@ std::string git_output(const CommandResult& result, const std::string& operation
   data["exit_code"] = result.exit_code;
   data["output"] = result.output;
   data["timed_out"] = result.timed_out;
+  data["truncated"] = result.truncated;
   data["read_only"] = true;
   if (result.exit_code != 0) {
     auto failure = error_result(operation + " failed");
@@ -963,6 +1013,7 @@ std::string ToolExecutor::run_readonly_command(const Json::Value& args) {
   data["exit_code"] = result.exit_code;
   data["output"] = result.output;
   data["timed_out"] = result.timed_out;
+  data["truncated"] = result.truncated;
   data["read_only"] = true;
   return json_string(ok_result(data));
 }
@@ -1061,6 +1112,7 @@ std::string ToolExecutor::run_command(const Json::Value& args) {
   data["exit_code"] = result.exit_code;
   data["output"] = result.output;
   data["timed_out"] = result.timed_out;
+  data["truncated"] = result.truncated;
   data["sandboxed"] = !elevated;
   return json_string(ok_result(data));
 }

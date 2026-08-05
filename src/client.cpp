@@ -588,7 +588,7 @@ ChatResponse ChatClient::stream(const Provider& provider,
                                 const Json::Value& tools,
                                 int max_output_tokens_override,
                                 const TextDelta& on_text,
-                                const volatile std::sig_atomic_t* cancelled) const {
+                                const std::atomic<int>* cancelled) const {
   if (provider.base_url.empty()) throw std::runtime_error("provider base URL is empty");
   if (model.empty()) throw std::runtime_error("model is empty");
   const auto capabilities = capabilities_for_model(provider, model);
