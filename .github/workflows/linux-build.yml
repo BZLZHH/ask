@@ -48,10 +48,12 @@ jobs:
         run: >-
           cmake -S . -B build/${{ matrix.slug }} -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
-          -DBUILD_TESTING=OFF
 
       - name: Build ${{ matrix.build_type }}
         run: cmake --build build/${{ matrix.slug }} --parallel 2
+
+      - name: Run tests (${{ matrix.build_type }})
+        run: ctest --test-dir build/${{ matrix.slug }} --output-on-failure
 
       - name: Stage artifact
         run: |

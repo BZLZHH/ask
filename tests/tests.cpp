@@ -29,6 +29,9 @@ void expect(bool condition, const std::string& message) {
 
 std::filesystem::path temporary_directory() {
   std::string pattern = "/tmp/ask-tests-XXXXXX";
+  if (const char* environment = std::getenv("TMPDIR"); environment && *environment) {
+    pattern = std::string(environment) + "/ask-tests-XXXXXX";
+  }
   char* path = ::mkdtemp(pattern.data());
   if (!path) throw std::runtime_error("mkdtemp failed");
   return path;
